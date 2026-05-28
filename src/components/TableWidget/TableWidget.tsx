@@ -1,8 +1,8 @@
-import { useRef } from 'react';
+import { useRef, useEffect } from 'react';
 import { Button } from '@faclon-labs/design-sdk';
 import { Download } from 'react-feather';
 import { DataEntry, WidgetEvent, TableWidgetUIConfig } from '../../iosense-sdk/types';
-import { CellDataStore } from './CellDataStore';
+import { CellDataStore, CellId } from './CellDataStore';
 import { VirtualGrid } from './VirtualGrid';
 import './TableWidget.css';
 
@@ -12,11 +12,26 @@ interface TableWidgetProps {
   onEvent: (event: WidgetEvent) => void;
 }
 
-export function TableWidget({ config, onEvent }: TableWidgetProps) {
+export function TableWidget({ config, data, onEvent }: TableWidgetProps) {
   const storeRef = useRef<CellDataStore | null>(null);
   if (storeRef.current === null) {
     storeRef.current = new CellDataStore();
   }
+
+  // Dev harness log — config changes
+  useEffect(() => {
+    console.log('[TableWidget] config received', config);
+  }, [config]);
+
+  // Inject UNS-resolved values into the store in one batch → single notifyAll → single render.
+  useEffect(() => {
+    console.log('[TableWidget] data received', data);
+    if (!storeRef.current || data.length === 0) return;
+    const entries = data
+      .filter(({ key }) => /^R\d+C\d+$/.test(key))
+      .map(({ key, value }) => ({ cellId: key as CellId, value: value != null ? String(value) : '' }));
+    if (entries.length > 0) storeRef.current.setValues(entries);
+  }, [data]);
 
   function handleExport() {
     onEvent({ type: 'FILTER_CHANGE', payload: { action: 'export' } });

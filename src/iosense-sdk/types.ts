@@ -88,6 +88,11 @@ export interface ConditionalRule {
   format: ConditionalRuleFormat;
 }
 
+export interface CellBinding {
+  cellId: string;  // "R{row}C{col}" — zero-indexed
+  topic: string;   // raw UNS topic, no {{ }} braces
+}
+
 export interface TableWidgetCardStyle {
   wrapInCard: boolean;
   bg: string;
@@ -115,6 +120,7 @@ export interface TableWidgetUIConfig {
   widgetHeight: number;
   locked: boolean;
   conditionalRules: ConditionalRule[];
+  cellBindings: CellBinding[];
   style: {
     card: TableWidgetCardStyle;
     title: TableWidgetTitleStyle;

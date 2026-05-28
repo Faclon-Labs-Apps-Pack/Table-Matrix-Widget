@@ -55,6 +55,13 @@ export class CellDataStore {
     this.listeners.forEach((fn) => fn(cellId, next));
   }
 
+  setValues(entries: Array<{ cellId: CellId; value: string }>): void {
+    for (const { cellId, value } of entries) {
+      this.cells.set(cellId, { ...this.getCell(cellId), value });
+    }
+    this.notifyAll();
+  }
+
   setFormat(cellId: CellId, format: CellFormat): void {
     const next: CellData = { ...this.getCell(cellId), format };
     this.cells.set(cellId, next);

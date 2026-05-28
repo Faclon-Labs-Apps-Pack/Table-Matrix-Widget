@@ -57,7 +57,7 @@ export default function App() {
       </div>
       <div className="app__widget">
         {envelope ? (
-          <div style={{ width: envelope.uiConfig.widgetWidth ?? 700, height: envelope.uiConfig.widgetHeight ?? 700 }}>
+          <div style={{ width: envelope.uiConfig.widgetWidth ?? 700, height: envelope.uiConfig.widgetHeight ?? 500 }}>
             <TableWidget config={envelope.uiConfig} data={data} onEvent={handleEvent} />
           </div>
         ) : (

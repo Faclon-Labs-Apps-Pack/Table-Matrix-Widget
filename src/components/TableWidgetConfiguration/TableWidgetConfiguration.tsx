@@ -6,8 +6,9 @@ import {
   TableWidgetEnvelope, TableWidgetUIConfig,
   ConditionalRule, ConditionalRuleCondition,
   TableWidgetCardStyle, TableWidgetTitleStyle, TableBorderStyle,
+  CellBinding,
 } from '../../iosense-sdk/types';
-import { parseRangeString } from '../TableWidget/formulaEngine';
+import { parseRangeString, refToCellId } from '../TableWidget/formulaEngine';
 import './TableWidgetConfiguration.css';
 
 interface TableWidgetConfigurationProps {
@@ -117,6 +118,11 @@ export function TableWidgetConfiguration({
   const [showExportButton, setShowExportButton] = useState<boolean>(
     config?.uiConfig.style?.showExportButton ?? true
   );
+  const [cellBindings, setCellBindings] = useState<CellBinding[]>(
+    config?.uiConfig.cellBindings ?? []
+  );
+  // Tracks the raw A1-style address the user is typing per binding row (display only)
+  const [cellRefInputs, setCellRefInputs] = useState<Record<number, string>>({});
 
   // Range input strings (display only — not in envelope directly)
   const [rangeInputs, setRangeInputs] = useState<Record<string, string>>({});
@@ -134,6 +140,8 @@ export function TableWidgetConfiguration({
       setTitleStyle(config.uiConfig.style?.title ?? DEFAULT_TITLE_STYLE);
       setTableBorderStyle(config.uiConfig.style?.tableBorderStyle ?? 'all');
       setShowExportButton(config.uiConfig.style?.showExportButton ?? true);
+      setCellBindings(config.uiConfig.cellBindings ?? []);
+      setCellRefInputs({});
     }
   }, [config?._id]);
 
@@ -184,7 +192,9 @@ export function TableWidgetConfiguration({
       },
     };
 
-    onChange(buildEnvelope(config, uiConfig, resolved.title));
+    const envelope = buildEnvelope(config, uiConfig, resolved.title);
+    console.log('[TableWidgetConfiguration] envelope', envelope);
+    onChange(envelope);
   }
 
   function updateCardStyle(patch: Partial<TableWidgetCardStyle>) {
