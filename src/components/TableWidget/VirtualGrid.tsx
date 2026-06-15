@@ -1,7 +1,6 @@
 import { useState, useEffect, useRef } from 'react';
 import { useVirtualizer } from '@tanstack/react-virtual';
-import { Button, Popover, PopoverHeader, PopoverBody } from '@faclon-labs/design-sdk';
-import { CompactColorPicker } from './CompactColorPicker';
+import { Button, Popover, PopoverHeader, PopoverBody, ColorPicker } from '@faclon-labs/design-sdk';
 import { Bold, Italic, Underline, AlignLeft, AlignCenter, AlignRight, Grid, Droplet, Type } from 'react-feather';
 import { CellDataStore, CellId } from './CellDataStore';
 import { getDisplayValue, applyNumberFormat, evaluateConditionalRules } from './formulaEngine';
@@ -934,9 +933,9 @@ export function VirtualGrid({ rows, columns, freezeRows, freezeColumns, store, c
         >
           <PopoverHeader title="Text Color" showClose />
           <PopoverBody>
-            <CompactColorPicker
-              value={currentTextColor || '#1a1a1a'}
-              onChange={(color) => applyFmt({ textColor: color })}
+            <ColorPicker
+              selectedColor={currentTextColor || '#1a1a1a'}
+              onColorSelect={(color) => applyFmt({ textColor: color })}
             />
           </PopoverBody>
         </Popover>
@@ -959,9 +958,9 @@ export function VirtualGrid({ rows, columns, freezeRows, freezeColumns, store, c
         >
           <PopoverHeader title="Fill Color" showClose />
           <PopoverBody>
-            <CompactColorPicker
-              value={currentCellColor || '#ffffff'}
-              onChange={(color) => applyFmt({ cellColor: color })}
+            <ColorPicker
+              selectedColor={currentCellColor || '#ffffff'}
+              onColorSelect={(color) => applyFmt({ cellColor: color })}
             />
           </PopoverBody>
         </Popover>
@@ -1032,9 +1031,9 @@ export function VirtualGrid({ rows, columns, freezeRows, freezeColumns, store, c
               >
                 <PopoverHeader title="Border Color" showClose />
                 <PopoverBody>
-                  <CompactColorPicker
-                    value={borderConfig.color}
-                    onChange={(color) => setBorderConfig((c) => ({ ...c, color }))}
+                  <ColorPicker
+                    selectedColor={borderConfig.color}
+                    onColorSelect={(color) => setBorderConfig((c) => ({ ...c, color }))}
                   />
                 </PopoverBody>
               </Popover>

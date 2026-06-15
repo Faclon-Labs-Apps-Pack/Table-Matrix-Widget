@@ -548,3 +548,26 @@
   background: var(--background-brand-default, #0073ea);
   color: #fff;
 }
+
+/* ── Data Bindings ─────────────────────────────────────────────────────────── */
+
+.wt-binding-row {
+  display: flex;
+  align-items: flex-end;
+  gap: var(--spacing-02, 6px);
+}
+
+.wt-binding-row__cell {
+  width: 72px;
+  flex-shrink: 0;
+}
+
+.wt-binding-row__topic {
+  flex: 1;
+  min-width: 0;
+}
+
+.wt-binding-row__remove {
+  flex-shrink: 0;
+  margin-bottom: 2px;
+}

@@ -102,7 +102,7 @@ export function getDisplayValue(cellId: CellId, store: CellDataStore): string {
 
 // ── Internal: cell-ref resolution ─────────────────────────────────────────
 
-function refToCellId(ref: string): CellId {
+export function refToCellId(ref: string): CellId {
   const m = /^([A-Z]+)(\d+)$/.exec(ref.toUpperCase());
   if (!m) throw new Error(`bad ref: ${ref}`);
   let col = 0;

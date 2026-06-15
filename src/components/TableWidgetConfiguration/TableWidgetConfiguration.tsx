@@ -1,6 +1,7 @@
 import { useState, useEffect } from 'react';
 import { TextInput, CounterInput, Button, Popover, PopoverBody } from '@faclon-labs/design-sdk';
-import { CompactColorPicker } from '../TableWidget/CompactColorPicker';
+import { UNSPathInput } from '@faclon-labs/design-sdk/UNSPathInput';
+import { ColorPicker } from '@faclon-labs/design-sdk';
 import { Bold, Italic, ChevronUp, ChevronDown, X, Plus, Grid, Type } from 'react-feather';
 import {
   TableWidgetEnvelope, TableWidgetUIConfig,
@@ -56,6 +57,20 @@ function buildEnvelope(
     uiConfig,
     dynamicBindingPathList: buildDynamicBindingPathList(uiConfig),
   };
+}
+
+function cellIdToRef(cellId: string): string {
+  const m = /^R(\d+)C(\d+)$/.exec(cellId);
+  if (!m) return '';
+  const row = parseInt(m[1], 10);
+  const col = parseInt(m[2], 10);
+  let col26 = '';
+  let c = col;
+  do {
+    col26 = String.fromCharCode(65 + (c % 26)) + col26;
+    c = Math.floor(c / 26) - 1;
+  } while (c >= 0);
+  return `${col26}${row + 1}`;
 }
 
 const CONDITION_LABELS: Record<ConditionalRuleCondition, string> = {
@@ -155,6 +170,7 @@ export function TableWidgetConfiguration({
     widgetWidth: number; widgetHeight: number;
     locked: boolean;
     conditionalRules: ConditionalRule[];
+    cellBindings: CellBinding[];
     cardStyle: TableWidgetCardStyle;
     titleStyle: TableWidgetTitleStyle;
     tableBorderStyle: TableBorderStyle;
@@ -168,6 +184,7 @@ export function TableWidgetConfiguration({
       widgetHeight:      overrides?.widgetHeight      ?? widgetHeight,
       locked:            overrides?.locked            ?? locked,
       conditionalRules:  overrides?.conditionalRules  ?? conditionalRules,
+      cellBindings:      overrides?.cellBindings      ?? cellBindings,
       cardStyle:         overrides?.cardStyle         ?? cardStyle,
       titleStyle:        overrides?.titleStyle        ?? titleStyle,
       tableBorderStyle:  overrides?.tableBorderStyle  ?? tableBorderStyle,
@@ -184,6 +201,7 @@ export function TableWidgetConfiguration({
       widgetHeight:     resolved.widgetHeight,
       locked:           resolved.locked,
       conditionalRules: resolved.conditionalRules,
+      cellBindings:     resolved.cellBindings,
       style: {
         card:             resolved.cardStyle,
         title:            resolved.titleStyle,
@@ -249,6 +267,26 @@ export function TableWidgetConfiguration({
     emit({ conditionalRules: next });
   }
 
+  // ── Cell binding helpers ───────────────────────────────────────────────────
+
+  function addBinding() {
+    const next = [...cellBindings, { cellId: '', topic: '' }];
+    setCellBindings(next);
+    emit({ cellBindings: next });
+  }
+
+  function updateBinding(idx: number, patch: Partial<CellBinding>) {
+    const next = cellBindings.map((b, i) => i === idx ? { ...b, ...patch } : b);
+    setCellBindings(next);
+    emit({ cellBindings: next });
+  }
+
+  function removeBinding(idx: number) {
+    const next = cellBindings.filter((_, i) => i !== idx);
+    setCellBindings(next);
+    emit({ cellBindings: next });
+  }
+
   return (
     <div className="wt-config">
       <div className="wt-config__header">
@@ -289,7 +327,7 @@ export function TableWidgetConfiguration({
               min={1}
               max={100}
               step={1}
-              disabled={locked}
+              isDisabled={locked}
               onChange={({ value }: { name: string; value: number | null }) => {
                 if (locked) return;
                 const next = value ?? 1;
@@ -304,7 +342,7 @@ export function TableWidgetConfiguration({
               min={1}
               max={50}
               step={1}
-              disabled={locked}
+              isDisabled={locked}
               onChange={({ value }: { name: string; value: number | null }) => {
                 if (locked) return;
                 const next = value ?? 1;
@@ -492,9 +530,9 @@ export function TableWidgetConfiguration({
                       placement="Bottom Start"
                     >
                       <PopoverBody>
-                        <CompactColorPicker
-                          value={rule.format.cellColor || '#ffffff'}
-                          onChange={(color) =>
+                        <ColorPicker
+                          selectedColor={rule.format.cellColor || '#ffffff'}
+                          onColorSelect={(color) =>
                             updateRule(rule.id, { format: { ...rule.format, cellColor: color } })
                           }
                         />
@@ -526,9 +564,9 @@ export function TableWidgetConfiguration({
                       placement="Bottom Start"
                     >
                       <PopoverBody>
-                        <CompactColorPicker
-                          value={rule.format.textColor || '#1a1a1a'}
-                          onChange={(color) =>
+                        <ColorPicker
+                          selectedColor={rule.format.textColor || '#1a1a1a'}
+                          onColorSelect={(color) =>
                             updateRule(rule.id, { format: { ...rule.format, textColor: color } })
                           }
                         />
@@ -540,6 +578,54 @@ export function TableWidgetConfiguration({
               </div>
             </div>
           ))}
+
+          {/* ── Data Bindings ── */}
+          <div className="wt-cf-section-head">
+            <p className="wt-config__section-title" style={{ margin: 0 }}>Data Bindings</p>
+            <button className="wt-cf-add-icon-btn" title="Add binding" onClick={addBinding}>
+              <Plus size={14} />
+            </button>
+          </div>
+
+          {cellBindings.length === 0 && (
+            <p className="wt-config__hint">No bindings. Click ＋ to bind a cell to a UNS topic.</p>
+          )}
+
+          {cellBindings.map((binding, idx) => (
+            <div key={idx} className="wt-binding-row">
+              <div className="wt-binding-row__cell">
+                <TextInput
+                  label="Cell"
+                  placeholder="e.g. A1"
+                  value={cellRefInputs[idx] ?? (binding.cellId ? cellIdToRef(binding.cellId) : '')}
+                  onChange={({ value }: { name: string; value: string }) => {
+                    setCellRefInputs(prev => ({ ...prev, [idx]: value }));
+                    try {
+                      const cellId = refToCellId(value);
+                      updateBinding(idx, { cellId });
+                    } catch { /* invalid ref — wait for more input */ }
+                  }}
+                />
+              </div>
+              <div className="wt-binding-row__topic">
+                <UNSPathInput
+                  label="UNS Topic"
+                  placeholder="Select topic…"
+                  value={binding.topic}
+                  tree={{}}
+                  onChange={(topic) => updateBinding(idx, { topic })}
+                />
+              </div>
+              <button
+                className="wt-cf-icon-btn wt-cf-icon-btn--danger wt-binding-row__remove"
+                title="Remove binding"
+                onClick={() => removeBinding(idx)}
+              >
+                <X size={11} />
+              </button>
+            </div>
+          ))}
+
         </div>
 
       ) : (
@@ -631,9 +717,9 @@ export function TableWidgetConfiguration({
                   placement="Bottom Start"
                 >
                   <PopoverBody>
-                    <CompactColorPicker
-                      value={cardStyle.bg || '#ffffff'}
-                      onChange={(c) => updateCardStyle({ bg: c })}
+                    <ColorPicker
+                      selectedColor={cardStyle.bg || '#ffffff'}
+                      onColorSelect={(c) => updateCardStyle({ bg: c })}
                     />
                   </PopoverBody>
                 </Popover>
@@ -660,9 +746,9 @@ export function TableWidgetConfiguration({
                       placement="Bottom Start"
                     >
                       <PopoverBody>
-                        <CompactColorPicker
-                          value={cardStyle.borderColor || '#e0e0e0'}
-                          onChange={(c) => updateCardStyle({ borderColor: c })}
+                        <ColorPicker
+                          selectedColor={cardStyle.borderColor || '#e0e0e0'}
+                          onColorSelect={(c) => updateCardStyle({ borderColor: c })}
                         />
                       </PopoverBody>
                     </Popover>
@@ -739,9 +825,9 @@ export function TableWidgetConfiguration({
                   placement="Bottom Start"
                 >
                   <PopoverBody>
-                    <CompactColorPicker
-                      value={titleStyle.color || '#1a1a1a'}
-                      onChange={(c) => updateTitleStyle({ color: c })}
+                    <ColorPicker
+                      selectedColor={titleStyle.color || '#1a1a1a'}
+                      onColorSelect={(c) => updateTitleStyle({ color: c })}
                     />
                   </PopoverBody>
                 </Popover>
