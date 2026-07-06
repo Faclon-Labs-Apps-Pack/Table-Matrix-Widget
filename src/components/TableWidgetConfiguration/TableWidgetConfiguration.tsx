@@ -2,46 +2,61 @@ import { useState, useEffect } from 'react';
 import { TextInput, CounterInput, Button, Popover, PopoverBody } from '@faclon-labs/design-sdk';
 import { UNSPathInput } from '@faclon-labs/design-sdk/UNSPathInput';
 import { ColorPicker } from '@faclon-labs/design-sdk';
-import { Bold, Italic, ChevronUp, ChevronDown, X, Plus, Grid, Type } from 'react-feather';
+import { Bold, Italic, ChevronUp, ChevronDown, X, Plus, Grid, Type, ArrowRight, ArrowDown, ArrowLeft } from 'react-feather';
 import {
   TableWidgetEnvelope, TableWidgetUIConfig,
   ConditionalRule, ConditionalRuleCondition,
   TableWidgetCardStyle, TableWidgetTitleStyle, TableBorderStyle,
-  CellBinding,
+  CellBinding, SeriesBinding, SeriesDirection,
 } from '../../iosense-sdk/types';
+import { withTableWidgetDefaults } from '../../iosense-sdk/defaults';
+import { useUNSTree, UNSTree } from '../../iosense-sdk/useUNSTree';
 import { parseRangeString, refToCellId } from '../TableWidget/formulaEngine';
 import './TableWidgetConfiguration.css';
 
 interface TableWidgetConfigurationProps {
   config: TableWidgetEnvelope | undefined;
   authentication?: string;
+  /** Host signals an existing widget is being edited (vs. adding a new one).
+   *  Wired through and logged for now — no field behaviour depends on it yet. */
+  editMode?: boolean;
+  /** Host-provided back navigation. When present a back button renders in the
+   *  config header and clicking it calls this. Absent → no button rendered. */
+  onBack?: () => void;
+  /** Angular-injected UNS tree. When all three injection props are present the
+   *  configurator uses them; otherwise it falls back to the useUNSTree hook. */
+  unsTree?: UNSTree;
+  isLoadingTree?: boolean;
+  onLoadWorkspaces?: () => void | Promise<void>;
+  resolveUNSValue?: (raw: string) => string;
   onChange: (config: TableWidgetEnvelope) => void;
 }
 
-const VARIABLE_REGEX = /^\{\{(.+)\}\}$/;
+// Extract the bare UNS topic from a stored binding value. Mapped values are
+// wrapped as "{{uns:wsId://path}}"; a raw pasted "uns:wsId://path" is accepted
+// as-is. Returns '' for empty / unmapped input so it is skipped.
+function extractTopic(raw: string | undefined): string {
+  const t = (raw ?? '').trim();
+  const m = /^\{\{(.+)\}\}$/.exec(t);
+  return (m ? m[1] : t).trim();
+}
 
-function buildDynamicBindingPathList(uiConfig: unknown): Array<{ key: string; topic: string }> {
+// Build the binding index the mini-engine resolves. Cell bindings use the
+// target cellId as the key so the resolved DataEntry lands directly on that
+// cell; series bindings use a "series:<baseCellId>" key the widget expands.
+function buildDynamicBindingPathList(uiConfig: TableWidgetUIConfig): Array<{ key: string; topic: string }> {
   const paths: Array<{ key: string; topic: string }> = [];
 
-  function walk(obj: unknown, currentPath: string): void {
-    if (obj === null || obj === undefined) return;
-    if (typeof obj === 'string') {
-      const match = VARIABLE_REGEX.exec(obj.trim());
-      if (match) paths.push({ key: currentPath, topic: match[1] });
-      return;
-    }
-    if (Array.isArray(obj)) {
-      obj.forEach((item, index) => walk(item, `${currentPath}[${index}]`));
-      return;
-    }
-    if (typeof obj === 'object') {
-      Object.entries(obj as Record<string, unknown>).forEach(([key, val]) => {
-        walk(val, currentPath ? `${currentPath}.${key}` : key);
-      });
-    }
+  for (const b of uiConfig.cellBindings) {
+    const topic = extractTopic(b.topic);
+    if (b.cellId && topic) paths.push({ key: b.cellId, topic });
   }
 
-  walk(uiConfig, '');
+  for (const s of uiConfig.seriesBindings) {
+    const topic = extractTopic(s.topic);
+    if (s.baseCellId && topic) paths.push({ key: `series:${s.baseCellId}`, topic });
+  }
+
   return paths;
 }
 
@@ -91,72 +106,67 @@ const NEEDS_VALUE1: ConditionalRuleCondition[] = [
   'equalTo', 'notEqualTo', 'between', 'contains',
 ];
 
-const DEFAULT_CARD: TableWidgetCardStyle = {
-  wrapInCard: false,
-  bg: '',
-  borderColor: '#e0e0e0',
-  borderWidth: 1,
-  borderRadius: 8,
-  padding: 16,
-};
-
-const DEFAULT_TITLE_STYLE: TableWidgetTitleStyle = {
-  color: '',
-  fontSize: 16,
-  fontWeight: 'regular',
-};
-
-export function TableWidgetConfiguration({
-  config,
-  onChange,
-}: TableWidgetConfigurationProps) {
+export function TableWidgetConfiguration(props: TableWidgetConfigurationProps) {
+  const { config, authentication, onChange, onBack, editMode } = props;
   const [activeTab, setActiveTab] = useState<'general' | 'style'>('general');
 
-  const [title, setTitle] = useState<string>(config?.uiConfig.title ?? '');
-  const [rows, setRows] = useState<number>(config?.uiConfig.rows ?? 10);
-  const [columns, setColumns] = useState<number>(config?.uiConfig.columns ?? 10);
-  const [widgetWidth, setWidgetWidth] = useState<number>(config?.uiConfig.widgetWidth ?? 700);
-  const [widgetHeight, setWidgetHeight] = useState<number>(config?.uiConfig.widgetHeight ?? 500);
-  const [locked, setLocked] = useState<boolean>(config?.uiConfig.locked ?? false);
-  const [conditionalRules, setConditionalRules] = useState<ConditionalRule[]>(
-    config?.uiConfig.conditionalRules ?? []
-  );
-  const [cardStyle, setCardStyle] = useState<TableWidgetCardStyle>(
-    config?.uiConfig.style?.card ?? DEFAULT_CARD
-  );
-  const [titleStyle, setTitleStyle] = useState<TableWidgetTitleStyle>(
-    config?.uiConfig.style?.title ?? DEFAULT_TITLE_STYLE
-  );
-  const [tableBorderStyle, setTableBorderStyle] = useState<TableBorderStyle>(
-    config?.uiConfig.style?.tableBorderStyle ?? 'all'
-  );
-  const [showExportButton, setShowExportButton] = useState<boolean>(
-    config?.uiConfig.style?.showExportButton ?? true
-  );
-  const [cellBindings, setCellBindings] = useState<CellBinding[]>(
-    config?.uiConfig.cellBindings ?? []
-  );
+  // UNS topic browser source. Prefer Angular-injected props when all three are
+  // present; otherwise fall back to the dev-harness hook (fetches workspaces +
+  // nodes itself from the bearer token). Without this wiring UNSPathInput has an
+  // empty tree and shows no topics — which is the bug this fixes.
+  const hook = useUNSTree(authentication);
+  const hasInjectedUNS =
+    props.unsTree !== undefined &&
+    props.onLoadWorkspaces !== undefined &&
+    props.resolveUNSValue !== undefined;
+  const unsTree        = hasInjectedUNS ? props.unsTree!         : hook.unsTree;
+  const isLoadingTree  = hasInjectedUNS ? (props.isLoadingTree ?? false) : hook.isLoadingTree;
+  const loadWorkspaces = hasInjectedUNS ? props.onLoadWorkspaces! : hook.loadWorkspaces;
+  const resolveUNSValue = hasInjectedUNS ? props.resolveUNSValue! : hook.resolveUNSValue;
+
+  // The host may pass an envelope whose uiConfig is partial or missing keys.
+  // Default every key through the shared helper so the form never reads undefined
+  // (e.g. `config.uiConfig.style.card`) and always emits a complete envelope.
+  const ui = withTableWidgetDefaults(config?.uiConfig);
+
+  const [title, setTitle] = useState<string>(ui.title);
+  const [rows, setRows] = useState<number>(ui.rows);
+  const [columns, setColumns] = useState<number>(ui.columns);
+  const [widgetWidth, setWidgetWidth] = useState<number>(ui.widgetWidth);
+  const [widgetHeight, setWidgetHeight] = useState<number>(ui.widgetHeight);
+  const [locked, setLocked] = useState<boolean>(ui.locked);
+  const [conditionalRules, setConditionalRules] = useState<ConditionalRule[]>(ui.conditionalRules);
+  const [cardStyle, setCardStyle] = useState<TableWidgetCardStyle>(ui.style.card);
+  const [titleStyle, setTitleStyle] = useState<TableWidgetTitleStyle>(ui.style.title);
+  const [tableBorderStyle, setTableBorderStyle] = useState<TableBorderStyle>(ui.style.tableBorderStyle);
+  const [showExportButton, setShowExportButton] = useState<boolean>(ui.style.showExportButton);
+  const [cellBindings, setCellBindings] = useState<CellBinding[]>(ui.cellBindings);
+  const [seriesBindings, setSeriesBindings] = useState<SeriesBinding[]>(ui.seriesBindings);
   // Tracks the raw A1-style address the user is typing per binding row (display only)
   const [cellRefInputs, setCellRefInputs] = useState<Record<number, string>>({});
+  const [seriesRefInputs, setSeriesRefInputs] = useState<Record<number, string>>({});
 
   // Range input strings (display only — not in envelope directly)
   const [rangeInputs, setRangeInputs] = useState<Record<string, string>>({});
 
   useEffect(() => {
     if (config) {
-      setTitle(config.uiConfig.title);
-      setRows(config.uiConfig.rows);
-      setColumns(config.uiConfig.columns);
-      setWidgetWidth(config.uiConfig.widgetWidth ?? 700);
-      setWidgetHeight(config.uiConfig.widgetHeight ?? 700);
-      setLocked(config.uiConfig.locked ?? false);
-      setConditionalRules(config.uiConfig.conditionalRules ?? []);
-      setCardStyle(config.uiConfig.style?.card ?? DEFAULT_CARD);
-      setTitleStyle(config.uiConfig.style?.title ?? DEFAULT_TITLE_STYLE);
-      setTableBorderStyle(config.uiConfig.style?.tableBorderStyle ?? 'all');
-      setShowExportButton(config.uiConfig.style?.showExportButton ?? true);
-      setCellBindings(config.uiConfig.cellBindings ?? []);
+      const u = withTableWidgetDefaults(config.uiConfig);
+      setTitle(u.title);
+      setRows(u.rows);
+      setColumns(u.columns);
+      setWidgetWidth(u.widgetWidth);
+      setWidgetHeight(u.widgetHeight);
+      setLocked(u.locked);
+      setConditionalRules(u.conditionalRules);
+      setCardStyle(u.style.card);
+      setTitleStyle(u.style.title);
+      setTableBorderStyle(u.style.tableBorderStyle);
+      setShowExportButton(u.style.showExportButton);
+      setCellBindings(u.cellBindings);
+      setSeriesBindings(u.seriesBindings);
       setCellRefInputs({});
+      setSeriesRefInputs({});
     }
   }, [config?._id]);
 
@@ -171,6 +181,7 @@ export function TableWidgetConfiguration({
     locked: boolean;
     conditionalRules: ConditionalRule[];
     cellBindings: CellBinding[];
+    seriesBindings: SeriesBinding[];
     cardStyle: TableWidgetCardStyle;
     titleStyle: TableWidgetTitleStyle;
     tableBorderStyle: TableBorderStyle;
@@ -185,6 +196,7 @@ export function TableWidgetConfiguration({
       locked:            overrides?.locked            ?? locked,
       conditionalRules:  overrides?.conditionalRules  ?? conditionalRules,
       cellBindings:      overrides?.cellBindings      ?? cellBindings,
+      seriesBindings:    overrides?.seriesBindings    ?? seriesBindings,
       cardStyle:         overrides?.cardStyle         ?? cardStyle,
       titleStyle:        overrides?.titleStyle        ?? titleStyle,
       tableBorderStyle:  overrides?.tableBorderStyle  ?? tableBorderStyle,
@@ -202,6 +214,7 @@ export function TableWidgetConfiguration({
       locked:           resolved.locked,
       conditionalRules: resolved.conditionalRules,
       cellBindings:     resolved.cellBindings,
+      seriesBindings:   resolved.seriesBindings,
       style: {
         card:             resolved.cardStyle,
         title:            resolved.titleStyle,
@@ -211,7 +224,7 @@ export function TableWidgetConfiguration({
     };
 
     const envelope = buildEnvelope(config, uiConfig, resolved.title);
-    console.log('[TableWidgetConfiguration] envelope', envelope);
+    console.log('[TableWidgetConfiguration] envelope', envelope, '| editMode:', editMode ?? false);
     onChange(envelope);
   }
 
@@ -287,9 +300,42 @@ export function TableWidgetConfiguration({
     emit({ cellBindings: next });
   }
 
+  // ── Series population helpers ──────────────────────────────────────────────
+
+  function addSeries() {
+    const next: SeriesBinding[] = [
+      ...seriesBindings,
+      { id: `series_${Date.now()}`, baseCellId: '', topic: '', direction: 'vertical', limit: 0 },
+    ];
+    setSeriesBindings(next);
+    emit({ seriesBindings: next });
+  }
+
+  function updateSeries(idx: number, patch: Partial<SeriesBinding>) {
+    const next = seriesBindings.map((s, i) => i === idx ? { ...s, ...patch } : s);
+    setSeriesBindings(next);
+    emit({ seriesBindings: next });
+  }
+
+  function removeSeries(idx: number) {
+    const next = seriesBindings.filter((_, i) => i !== idx);
+    setSeriesBindings(next);
+    emit({ seriesBindings: next });
+  }
+
   return (
     <div className="wt-config">
       <div className="wt-config__header">
+        {onBack && (
+          <Button
+            iconOnly
+            leadingIcon={<ArrowLeft size={16} />}
+            variant="Gray"
+            size="Small"
+            aria-label="Back"
+            onClick={() => onBack()}
+          />
+        )}
         <span className="wt-config__title LabelMediumDefault">TableWidget</span>
       </div>
 
@@ -610,10 +656,12 @@ export function TableWidgetConfiguration({
               <div className="wt-binding-row__topic">
                 <UNSPathInput
                   label="UNS Topic"
-                  placeholder="Select topic…"
+                  placeholder="Type / to browse…"
                   value={binding.topic}
-                  tree={{}}
-                  onChange={(topic) => updateBinding(idx, { topic })}
+                  tree={unsTree}
+                  isLoading={isLoadingTree}
+                  onOpen={loadWorkspaces}
+                  onChange={(value) => updateBinding(idx, { topic: resolveUNSValue(value) })}
                 />
               </div>
               <button
@@ -623,6 +671,91 @@ export function TableWidgetConfiguration({
               >
                 <X size={11} />
               </button>
+            </div>
+          ))}
+
+          {/* ── Series Population ── */}
+          <div className="wt-cf-section-head">
+            <p className="wt-config__section-title" style={{ margin: 0 }}>Series Population</p>
+            <button className="wt-cf-add-icon-btn" title="Add series" onClick={addSeries}>
+              <Plus size={14} />
+            </button>
+          </div>
+
+          {seriesBindings.length === 0 && (
+            <p className="wt-config__hint">
+              No series. Click ＋ to spread an array topic from a base cell across rows or columns.
+            </p>
+          )}
+
+          {seriesBindings.map((series, idx) => (
+            <div key={series.id} className="wt-series-item">
+              <div className="wt-binding-row">
+                <div className="wt-binding-row__cell">
+                  <TextInput
+                    label="Base cell"
+                    placeholder="e.g. A1"
+                    value={seriesRefInputs[idx] ?? (series.baseCellId ? cellIdToRef(series.baseCellId) : '')}
+                    onChange={({ value }: { name: string; value: string }) => {
+                      setSeriesRefInputs(prev => ({ ...prev, [idx]: value }));
+                      try {
+                        const baseCellId = refToCellId(value);
+                        updateSeries(idx, { baseCellId });
+                      } catch { /* invalid ref — wait for more input */ }
+                    }}
+                  />
+                </div>
+                <div className="wt-binding-row__topic">
+                  <UNSPathInput
+                    label="Array topic"
+                    placeholder="Type / to browse…"
+                    value={series.topic}
+                    tree={unsTree}
+                    isLoading={isLoadingTree}
+                    onOpen={loadWorkspaces}
+                    onChange={(value) => updateSeries(idx, { topic: resolveUNSValue(value) })}
+                  />
+                </div>
+                <button
+                  className="wt-cf-icon-btn wt-cf-icon-btn--danger wt-binding-row__remove"
+                  title="Remove series"
+                  onClick={() => removeSeries(idx)}
+                >
+                  <X size={11} />
+                </button>
+              </div>
+
+              <div className="wt-series-item__controls">
+                <div className="wt-series-item__direction">
+                  <span className="wt-config__label BodySmallDefault">Direction</span>
+                  <div className="wt-seg-group">
+                    {([
+                      { value: 'vertical',   label: 'Down',   icon: <ArrowDown size={11} /> },
+                      { value: 'horizontal', label: 'Across',  icon: <ArrowRight size={11} /> },
+                    ] as { value: SeriesDirection; label: string; icon: React.ReactNode }[]).map(({ value, label, icon }) => (
+                      <button
+                        key={value}
+                        className={`wt-seg-btn${series.direction === value ? ' wt-seg-btn--active' : ''}`}
+                        onClick={() => updateSeries(idx, { direction: value })}
+                      >
+                        <span className="wt-series-item__seg-content">{icon}{label}</span>
+                      </button>
+                    ))}
+                  </div>
+                </div>
+                <div className="wt-series-item__limit">
+                  <CounterInput
+                    label="Max cells (0 = all)"
+                    value={series.limit}
+                    min={0}
+                    max={1000}
+                    step={1}
+                    onChange={({ value }: { name: string; value: number | null }) =>
+                      updateSeries(idx, { limit: value ?? 0 })
+                    }
+                  />
+                </div>
+              </div>
             </div>
           ))}
 

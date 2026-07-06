@@ -53,7 +53,13 @@ export default function App() {
   return (
     <div className="app">
       <div className="app__config">
-        <TableWidgetConfiguration config={envelope} authentication={auth} onChange={setEnvelope} />
+        <TableWidgetConfiguration
+          config={envelope}
+          authentication={auth}
+          editMode={!!envelope}
+          onBack={() => console.log('[App] onBack')}
+          onChange={setEnvelope}
+        />
       </div>
       <div className="app__widget">
         {envelope ? (

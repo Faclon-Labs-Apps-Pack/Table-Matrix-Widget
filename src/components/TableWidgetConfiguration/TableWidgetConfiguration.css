@@ -7,6 +7,9 @@
 }
 
 .wt-config__header {
+  display: flex;
+  align-items: center;
+  gap: var(--spacing-03, 8px);
   padding: var(--spacing-04, 12px) var(--spacing-05, 16px);
   border-bottom: 1px solid var(--fds-border-default, #e0e0e0);
 }
@@ -570,4 +573,41 @@
 .wt-binding-row__remove {
   flex-shrink: 0;
   margin-bottom: 2px;
+}
+
+/* ── Series Population ──────────────────────────────────────────────────────── */
+
+.wt-series-item {
+  display: flex;
+  flex-direction: column;
+  gap: var(--spacing-02, 6px);
+  padding: var(--spacing-03, 8px);
+  border: 1px solid var(--fds-border-subtle, #e0e0e0);
+  border-radius: 6px;
+  background: var(--background-default-subtle, #fafafa);
+}
+
+.wt-series-item__controls {
+  display: flex;
+  align-items: flex-end;
+  gap: var(--spacing-03, 8px);
+}
+
+.wt-series-item__direction {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.wt-series-item__limit {
+  width: 120px;
+  flex-shrink: 0;
+}
+
+.wt-series-item__seg-content {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
 }

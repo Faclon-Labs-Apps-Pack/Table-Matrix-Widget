@@ -1,6 +1,15 @@
+// A resolved binding value. Single-cell bindings resolve to a scalar; series
+// bindings resolve to an array (or a JSON / comma string the widget parses).
+export type DataValue =
+  | string
+  | number
+  | boolean
+  | null
+  | Array<string | number | boolean | null>;
+
 export interface DataEntry {
   key: string;
-  value: string | number | null;
+  value: DataValue;
 }
 
 export interface Duration {
@@ -90,7 +99,20 @@ export interface ConditionalRule {
 
 export interface CellBinding {
   cellId: string;  // "R{row}C{col}" — zero-indexed
-  topic: string;   // raw UNS topic, no {{ }} braces
+  topic: string;   // mapped UNS path, stored wrapped as "{{uns:wsId://path}}"
+}
+
+// Series population: a single base cell is bound to a topic that resolves to an
+// array. The array is laid out from the base cell either across columns
+// (horizontal) or down rows (vertical).
+export type SeriesDirection = 'horizontal' | 'vertical';
+
+export interface SeriesBinding {
+  id: string;
+  baseCellId: string;          // "R{row}C{col}" — anchor cell, zero-indexed
+  topic: string;               // mapped UNS path, "{{uns:wsId://path}}" (resolves to an array)
+  direction: SeriesDirection;  // layout direction from the base cell
+  limit: number;               // max cells to fill; 0 = no cap (fill whole array)
 }
 
 export interface TableWidgetCardStyle {
@@ -121,6 +143,7 @@ export interface TableWidgetUIConfig {
   locked: boolean;
   conditionalRules: ConditionalRule[];
   cellBindings: CellBinding[];
+  seriesBindings: SeriesBinding[];
   style: {
     card: TableWidgetCardStyle;
     title: TableWidgetTitleStyle;

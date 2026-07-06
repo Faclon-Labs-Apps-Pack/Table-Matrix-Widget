@@ -1,3 +1,5 @@
+import { DataValue } from './types';
+
 const STAGING_BASE = 'https://stagingsv.iosense.io/api';
 const GRAPH = 'iosense_test_uns';
 
@@ -16,7 +18,7 @@ export async function resolveAndCompute(
   config: Array<{ key: string; topic: string }>,
   startTime: number,
   endTime: number,
-): Promise<Array<{ key: string; value: string | number | null }>> {
+): Promise<Array<{ key: string; value: DataValue }>> {
   const res = await fetch(`${STAGING_BASE}/account/uns/resolveAndCompute`, {
     method: 'POST',
     headers: {
@@ -26,7 +28,7 @@ export async function resolveAndCompute(
     body: JSON.stringify({ graph: GRAPH, config, startTime, endTime }),
   });
   const json = await res.json();
-  return (json?.data ?? []) as Array<{ key: string; value: string | number | null }>;
+  return (json?.data ?? []) as Array<{ key: string; value: DataValue }>;
 }
 
 export async function fetchUNSNodes(
