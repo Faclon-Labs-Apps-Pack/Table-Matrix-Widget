@@ -1,0 +1,7 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(grep -oE \"fds-chip[^\\\\\"']*\\\\\"[^\\)]{0,400}\" node_modules/@faclon-labs/design-sdk/dist/index.js)"
+    ]
+  }
+}

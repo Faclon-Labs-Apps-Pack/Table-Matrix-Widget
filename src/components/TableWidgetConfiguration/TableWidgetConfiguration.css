@@ -611,3 +611,96 @@
   align-items: center;
   gap: 4px;
 }
+
+/* ── Row Filter ──────────────────────────────────────────────────────────── */
+
+.wt-rowfilter-error {
+  color: var(--text-danger-default, #d93025);
+  background: var(--background-danger-secondary, #fdecea);
+  border-color: var(--fds-border-subtle, #f3c6c2);
+}
+
+.wt-rowfilter-filter-row {
+  display: flex;
+  align-items: center;
+  gap: var(--spacing-02, 6px);
+  padding: 6px 8px;
+  border: 1px solid var(--fds-border-subtle, #e0e0e0);
+  border-radius: 6px;
+  background: var(--background-default-intense, #fff);
+}
+
+.wt-rowfilter-filter-row__icon {
+  display: flex;
+  align-items: center;
+  flex-shrink: 0;
+}
+
+.wt-rowfilter-filter-row__swatch {
+  width: 12px;
+  height: 12px;
+  border-radius: 3px;
+  flex-shrink: 0;
+  border: 1px solid rgba(0, 0, 0, 0.12);
+}
+
+.wt-rowfilter-filter-row__name {
+  flex: 1;
+  min-width: 0;
+  font-size: 12px;
+  font-weight: 500;
+  color: var(--text-default-primary, #1a1a1a);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+/* ── Add/Edit Filter modal ── */
+
+.wt-rowfilter-modal .fds-modal {
+  width: 260px;
+}
+
+.wt-rowfilter-modal__body {
+  display: flex;
+  flex-direction: column;
+  gap: var(--spacing-04, 12px);
+}
+
+.wt-rowfilter-icon-field {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.wt-rowfilter-icon-grid {
+  display: grid;
+  grid-template-columns: repeat(6, 1fr);
+  gap: 4px;
+}
+
+.wt-rowfilter-icon-btn {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 28px;
+  height: 28px;
+  border: 1px solid var(--fds-border-subtle, #ddd);
+  border-radius: 6px;
+  background: var(--background-default-intense, #fff);
+  color: var(--text-default-secondary, #666);
+  cursor: pointer;
+  padding: 0;
+  transition: border-color 0.1s, background 0.1s, color 0.1s;
+}
+
+.wt-rowfilter-icon-btn:hover {
+  border-color: var(--background-brand-default, #0073ea);
+  background: var(--background-info-secondary, #f0f7ff);
+}
+
+.wt-rowfilter-icon-btn--active {
+  background: var(--background-brand-default, #0073ea);
+  border-color: var(--background-brand-default, #0073ea);
+  color: #fff;
+}

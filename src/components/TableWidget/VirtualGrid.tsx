@@ -3,6 +3,7 @@ import { useVirtualizer } from '@tanstack/react-virtual';
 import { Button, Popover, PopoverHeader, PopoverBody, ColorPicker } from '@faclon-labs/design-sdk';
 import { Bold, Italic, Underline, AlignLeft, AlignCenter, AlignRight, Grid, Droplet, Type } from 'react-feather';
 import { CellDataStore, CellId } from './CellDataStore';
+import { BoundInfo } from './bindingMap';
 import { getDisplayValue, applyNumberFormat, evaluateConditionalRules } from './formulaEngine';
 import { CellFormat, CellBorders, CellBorderSide, BorderStyle, BorderWidth, TextAlign, NumberFormat, ConditionalRule, TableBorderStyle } from '../../iosense-sdk/types';
 import './VirtualGrid.css';
@@ -22,6 +23,19 @@ interface VirtualGridProps {
   conditionalRules: ConditionalRule[];
   locked?: boolean;
   tableBorderStyle?: TableBorderStyle;
+  /** Cells carrying a UNS binding — shown with a corner indicator + tooltip and
+   *  locked from manual typing (their value is populated by the service). */
+  boundCells?: Map<CellId, BoundInfo>;
+  /** Cells a series will fill, highlighted while its config popover is open. */
+  previewCells?: Set<CellId>;
+  /** Double-clicking a cell calls this (with its viewport rect) instead of
+   *  entering text-edit mode — the host opens the Cell Config popover. */
+  onCellConfigure?: (cellId: CellId, rect: DOMRect) => void;
+  /** Rows the active row filter selection hides entirely (collapsed to 0px). */
+  hiddenRows?: Set<number>;
+  /** Rows the active row filter selection tints — takes priority over
+   *  conditional formatting and the cell's own background color. */
+  rowColors?: Map<number, string>;
 }
 
 interface ContextMenuState {
@@ -171,7 +185,12 @@ function cellBorderInlineStyle(borders: CellBorders): React.CSSProperties {
   return result;
 }
 
-export function VirtualGrid({ rows, columns, freezeRows, freezeColumns, store, conditionalRules, locked = false, tableBorderStyle = 'all' }: VirtualGridProps) {
+export function VirtualGrid({ rows, columns, freezeRows, freezeColumns, store, conditionalRules, locked = false, tableBorderStyle = 'all', boundCells, previewCells, onCellConfigure, hiddenRows, rowColors }: VirtualGridProps) {
+  // Bound cells are service-populated — never manually editable.
+  const isBound = (cellId: CellId) => boundCells?.has(cellId) ?? false;
+  // Keep a live ref for the document-level paste listener (stale-closure guard).
+  const boundCellsRef = useRef(boundCells);
+  boundCellsRef.current = boundCells;
   // ── Selection ──────────────────────────────────────────────────────────────
   const [selectedCells, setSelectedCells] = useState<Set<CellId>>(new Set());
   const [tick, setTick] = useState(0);
@@ -342,8 +361,9 @@ export function VirtualGrid({ rows, columns, freezeRows, freezeColumns, store, c
         pasteRow.forEach((value, ci) => {
           const r = anchorR + ri;
           const c = anchorC + ci;
-          if (r < localRowsRef.current && c < localColsRef.current)
-            store.setValue(`R${r}C${c}`, value);
+          const target = `R${r}C${c}` as CellId;
+          if (r < localRowsRef.current && c < localColsRef.current && !boundCellsRef.current?.has(target))
+            store.setValue(target, value);
         });
       });
     }
@@ -381,6 +401,7 @@ export function VirtualGrid({ rows, columns, freezeRows, freezeColumns, store, c
   function enterEditMode(cellId: CellId, initialChar?: string) {
     const m = /^R(\d+)C(\d+)$/.exec(cellId);
     if (!m) return;
+    if (isBound(cellId)) return; // bound cells are service-populated, not editable
     editingCellRef.current = cellId;
     setEditingCell(cellId);
     setSelectedCells(new Set([cellId]));
@@ -672,6 +693,7 @@ export function VirtualGrid({ rows, columns, freezeRows, freezeColumns, store, c
 
   // Data rows — only visible rows (rowSet)
   for (const row of rowSet) {
+    if (hiddenRows?.has(row)) continue; // row filter hid this row — collapsed via gridTemplateRows below
     const rh = rowHeights[row] ?? ROW_HEIGHT;
 
     // Row number cell — hidden in locked mode
@@ -741,7 +763,7 @@ export function VirtualGrid({ rows, columns, freezeRows, freezeColumns, store, c
         fontSize: fmt.fontSize,
         textAlign: fmt.textAlign,
         color: cfPatch.textColor ?? (fmt.textColor || undefined),
-        backgroundColor: cfPatch.cellColor ?? (fmt.cellColor || undefined),
+        backgroundColor: rowColors?.get(row) ?? cfPatch.cellColor ?? (fmt.cellColor || undefined),
         ...lockedTopBorder,
         ...lockedLeftBorder,
         ...cellBorderInlineStyle(fmt.borders),
@@ -750,11 +772,15 @@ export function VirtualGrid({ rows, columns, freezeRows, freezeColumns, store, c
         ...(formulaEditingCell !== null && formulaEditingCell !== cellId ? { cursor: 'cell' } : {}),
       };
 
+      const bound = boundCells?.get(cellId);
       const classNames = [
         'vg-cell',
         'vg-data-cell',
         selectedCells.has(cellId) ? 'vg-cell--selected' : '',
         formulaRefCells.has(cellId) ? 'vg-cell--formula-ref' : '',
+        bound ? 'vg-cell--bound' : '',
+        bound?.kind === 'series-base' ? 'vg-cell--series-base' : '',
+        previewCells?.has(cellId) ? 'vg-cell--preview' : '',
         row < localFR ? 'vg-cell--frozen-row' : '',
         col < localFC ? 'vg-cell--frozen-col' : '',
       ]
@@ -766,7 +792,8 @@ export function VirtualGrid({ rows, columns, freezeRows, freezeColumns, store, c
           key={cellId}
           className={classNames}
           style={cellInlineStyle}
-          contentEditable={!locked}
+          title={bound ? bound.topic : undefined}
+          contentEditable={!locked && !bound}
           suppressContentEditableWarning
           ref={(el: HTMLDivElement | null) => {
             if (el) {
@@ -780,8 +807,9 @@ export function VirtualGrid({ rows, columns, freezeRows, freezeColumns, store, c
             }
           }}
           onMouseDown={(e) => {
-            // Locked: always prevent browser focus — selection still works via click
-            if (locked) { e.preventDefault(); return; }
+            // Locked or bound: never take browser focus — click still selects,
+            // double-click still opens the config popover.
+            if (locked || bound) { e.preventDefault(); return; }
             // Formula pick mode: keep focus on the formula cell
             if (formulaEditingCell && formulaEditingCell !== cellId) {
               e.preventDefault();
@@ -796,7 +824,14 @@ export function VirtualGrid({ rows, columns, freezeRows, freezeColumns, store, c
           onClick={(e) => handleCellClick(e, cellId)}
           onDoubleClick={(e) => {
             e.stopPropagation();
-            if (!locked) enterEditMode(cellId);
+            if (locked) return;
+            // Double-click configures the cell's binding (host opens the popover).
+            // Fall back to text edit when no config handler is wired.
+            if (onCellConfigure) {
+              onCellConfigure(cellId, e.currentTarget.getBoundingClientRect());
+            } else {
+              enterEditMode(cellId);
+            }
           }}
           onFocus={(e) => {
             // Content is set by enterEditMode; just detect formula mode from current content
@@ -865,9 +900,14 @@ export function VirtualGrid({ rows, columns, freezeRows, freezeColumns, store, c
   const gridTemplateColumns = locked
     ? colWidths.slice(0, localCols).map((w) => `${w}px`).join(' ')
     : `${ROW_NUM_WIDTH}px ${colWidths.slice(0, localCols).map((w) => `${w}px`).join(' ')}`;
+  // Row-filter-hidden rows collapse to a 0px track — rowHeights itself (which
+  // also drives the virtualizer's estimateSize) is left untouched.
+  const effectiveRowHeights = rowHeights
+    .slice(0, localRows)
+    .map((h, i) => (hiddenRows?.has(i) ? 0 : h));
   const gridTemplateRows = locked
-    ? rowHeights.slice(0, localRows).map((h) => `${h}px`).join(' ')
-    : `${ROW_HEIGHT}px ${rowHeights.slice(0, localRows).map((h) => `${h}px`).join(' ')}`;
+    ? effectiveRowHeights.map((h) => `${h}px`).join(' ')
+    : `${ROW_HEIGHT}px ${effectiveRowHeights.map((h) => `${h}px`).join(' ')}`;
 
   // ── Render ─────────────────────────────────────────────────────────────────
   return (
@@ -1086,10 +1126,10 @@ export function VirtualGrid({ rows, columns, freezeRows, freezeColumns, store, c
             if (id) enterEditMode(id);
           } else if (!locked && (e.key === 'Backspace' || e.key === 'Delete')) {
             e.preventDefault();
-            [...selectedCells].forEach((sid) => store.setValue(sid, ''));
+            [...selectedCells].filter((sid) => !isBound(sid)).forEach((sid) => store.setValue(sid, ''));
           } else if (!locked && !e.ctrlKey && !e.metaKey && !e.altKey && e.key.length === 1) {
             // Printable char: enter edit mode with that character (overwrites)
-            if (id) {
+            if (id && !isBound(id)) {
               e.preventDefault();
               enterEditMode(id, e.key);
             }

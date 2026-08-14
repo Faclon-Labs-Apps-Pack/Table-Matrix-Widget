@@ -31,7 +31,11 @@ export interface TimeConfig {
 
 export type WidgetEvent =
   | { type: 'TIME_CHANGE'; payload: { startTime: string; endTime: string; periodicity: string } }
-  | { type: 'FILTER_CHANGE'; payload: Record<string, unknown> };
+  | { type: 'FILTER_CHANGE'; payload: Record<string, unknown> }
+  // Emitted when the user edits a cell binding directly on the widget canvas.
+  // The widget stays a pure renderer — it hands the updated uiConfig to the host,
+  // which rebuilds dynamicBindingPathList and persists the envelope.
+  | { type: 'CONFIG_CHANGE'; payload: { uiConfig: TableWidgetUIConfig } };
 
 export type TextAlign = 'left' | 'center' | 'right';
 export type NumberFormat = 'general' | 'number' | 'percent' | 'currency' | 'integer';
@@ -115,6 +119,27 @@ export interface SeriesBinding {
   limit: number;               // max cells to fill; 0 = no cap (fill whole array)
 }
 
+export type RowFilterType = 'chips' | 'dropdown';
+
+export interface RowFilterItem {
+  id: string;
+  name: string;
+  color: string; // CSS hex
+  icon: string;  // key into the curated icon registry (rowFilter.ts)
+}
+
+export interface RowFilterConfig {
+  colIndex: number | null; // 0-based; null = not configured
+  startRow: number | null; // 0-based inclusive
+  endRow: number | null;   // 0-based inclusive
+  range: string;           // raw text shown in the configurator input, e.g. "A2:A10"
+  filterType: RowFilterType;
+  enableCount: boolean;
+  hideNonMatching: boolean; // filtering — hide rows not matched by any active filter
+  enableColor: boolean;     // highlighting — tint matched rows with the filter's color (optional, independent of hideNonMatching)
+  filters: RowFilterItem[];
+}
+
 export interface TableWidgetCardStyle {
   wrapInCard: boolean;
   bg: string;
@@ -144,6 +169,7 @@ export interface TableWidgetUIConfig {
   conditionalRules: ConditionalRule[];
   cellBindings: CellBinding[];
   seriesBindings: SeriesBinding[];
+  rowFilter: RowFilterConfig;
   style: {
     card: TableWidgetCardStyle;
     title: TableWidgetTitleStyle;

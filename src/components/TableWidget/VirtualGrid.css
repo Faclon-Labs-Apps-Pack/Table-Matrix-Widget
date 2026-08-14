@@ -418,6 +418,37 @@
 .vg-cell--frozen-row { border-bottom-color: var(--fds-border-default, #bbb); }
 .vg-cell--frozen-col { border-right-color:  var(--fds-border-default, #bbb); }
 
+/* ── Bound cell indicator ── */
+/* A small triangle in the top-right corner marks a cell that carries a UNS
+   binding (value populated by the service, not typeable). Rendered via ::before
+   so it never interferes with cell text. */
+.vg-cell--bound { position: relative; }
+.vg-cell--bound.vg-data-cell { cursor: default; }
+.vg-cell--bound::before {
+  content: '';
+  position: absolute;
+  top: 0;
+  right: 0;
+  width: 0;
+  height: 0;
+  border-top: 7px solid var(--background-brand-default, #0073ea);
+  border-left: 7px solid transparent;
+  pointer-events: none;
+  z-index: 2;
+}
+/* Series bases use a distinct (violet) corner so they read differently from
+   single-value bindings at a glance. */
+.vg-cell--series-base::before {
+  border-top-color: var(--background-purple-default, #7c4dff);
+}
+
+/* ── Series spill preview (while a series config popover is open) ── */
+.vg-cell--preview {
+  background: var(--background-purple-secondary, #f0ebff) !important;
+  outline: 1px dashed var(--background-purple-default, #7c4dff);
+  outline-offset: -1px;
+}
+
 /* Constrain ColorPicker width to fit inside Popover */
 .vg-color-picker-wrap {
   width: 224px;

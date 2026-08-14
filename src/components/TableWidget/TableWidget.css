@@ -34,3 +34,93 @@
   overflow: hidden;
   border-top: 1px solid var(--fds-border-subtle, #eee);
 }
+
+/* ── Row Filter toolbar ─────────────────────────────────────────────────── */
+
+.tw-filter-bar {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: var(--spacing-02, 6px);
+  padding: var(--spacing-02, 6px) 0;
+  border-top: 1px solid var(--fds-border-subtle, #eee);
+  flex-shrink: 0;
+}
+
+.tw-filter-dropdown__list {
+  display: flex;
+  flex-direction: column;
+  gap: var(--spacing-03, 8px);
+  min-width: 160px;
+}
+
+/* ── Cell Config popover (on-canvas cell binding) ───────────────────────────── */
+
+.tw-cell-config-modal .fds-modal {
+  width: 300px;
+}
+
+.tw-cc__body {
+  display: flex;
+  flex-direction: column;
+  gap: var(--spacing-04, 12px);
+}
+
+.tw-cc__field {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.tw-cc__label {
+  font-size: 12px;
+  color: var(--text-default-secondary, #555);
+}
+
+.tw-cc__seg-content {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+}
+
+/* Segmented control (self-contained so the widget bundle needs no config CSS) */
+.tw-seg-group {
+  display: flex;
+  border: 1px solid var(--fds-border-subtle, #ddd);
+  border-radius: var(--global-border-radius-medium, 6px);
+  overflow: hidden;
+}
+
+.tw-seg-btn {
+  flex: 1;
+  padding: 6px 10px;
+  font-size: 12px;
+  background: var(--background-default-intense, #fff);
+  border: none;
+  border-right: 1px solid var(--fds-border-subtle, #eee);
+  cursor: pointer;
+  color: var(--text-default-secondary, #555);
+}
+.tw-seg-btn:last-child { border-right: none; }
+.tw-seg-btn:hover { background: var(--background-gray-hover-light, #f0f0f0); }
+.tw-seg-btn--active {
+  background: var(--background-info-secondary, #e8f4fd);
+  color: var(--background-brand-default, #0073ea);
+  font-weight: 600;
+}
+
+.tw-cc__clear {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  align-self: flex-start;
+  margin-top: var(--spacing-02, 4px);
+  padding: 4px 8px;
+  background: transparent;
+  border: none;
+  border-radius: 4px;
+  cursor: pointer;
+  font-size: 12px;
+  color: var(--text-danger-default, #d93025);
+}
+.tw-cc__clear:hover { background: var(--background-danger-secondary, #fdecea); }

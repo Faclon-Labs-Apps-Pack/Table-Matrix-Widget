@@ -1,17 +1,20 @@
-import { useState, useEffect } from 'react';
+import { useState, useEffect, useRef } from 'react';
 import { TextInput, CounterInput, Button, Popover, PopoverBody } from '@faclon-labs/design-sdk';
+import { Modal, ModalHeader, ModalBody, ModalFooter } from '@faclon-labs/design-sdk/Modal';
 import { UNSPathInput } from '@faclon-labs/design-sdk/UNSPathInput';
 import { ColorPicker } from '@faclon-labs/design-sdk';
-import { Bold, Italic, ChevronUp, ChevronDown, X, Plus, Grid, Type, ArrowRight, ArrowDown, ArrowLeft } from 'react-feather';
+import { Bold, Italic, ChevronUp, ChevronDown, X, Plus, Grid, Type, ArrowRight, ArrowDown, ArrowLeft, Filter, Edit2 } from 'react-feather';
 import {
   TableWidgetEnvelope, TableWidgetUIConfig,
   ConditionalRule, ConditionalRuleCondition,
   TableWidgetCardStyle, TableWidgetTitleStyle, TableBorderStyle,
   CellBinding, SeriesBinding, SeriesDirection,
+  RowFilterConfig, RowFilterItem, RowFilterType,
 } from '../../iosense-sdk/types';
 import { withTableWidgetDefaults } from '../../iosense-sdk/defaults';
 import { useUNSTree, UNSTree } from '../../iosense-sdk/useUNSTree';
 import { parseRangeString, refToCellId } from '../TableWidget/formulaEngine';
+import { ROW_FILTER_ICONS, ROW_FILTER_ICON_NAMES, DEFAULT_ROW_FILTER_ICON, parseRowFilterRange } from '../TableWidget/rowFilter';
 import './TableWidgetConfiguration.css';
 
 interface TableWidgetConfigurationProps {
@@ -108,7 +111,8 @@ const NEEDS_VALUE1: ConditionalRuleCondition[] = [
 
 export function TableWidgetConfiguration(props: TableWidgetConfigurationProps) {
   const { config, authentication, onChange, onBack, editMode } = props;
-  const [activeTab, setActiveTab] = useState<'general' | 'style'>('general');
+  const [activeTab, setActiveTab] = useState<'general' | 'style' | 'filter'>('general');
+  const configRef = useRef<HTMLDivElement>(null);
 
   // UNS topic browser source. Prefer Angular-injected props when all three are
   // present; otherwise fall back to the dev-harness hook (fetches workspaces +
@@ -142,12 +146,25 @@ export function TableWidgetConfiguration(props: TableWidgetConfigurationProps) {
   const [showExportButton, setShowExportButton] = useState<boolean>(ui.style.showExportButton);
   const [cellBindings, setCellBindings] = useState<CellBinding[]>(ui.cellBindings);
   const [seriesBindings, setSeriesBindings] = useState<SeriesBinding[]>(ui.seriesBindings);
+  const [rowFilter, setRowFilter] = useState<RowFilterConfig>(ui.rowFilter);
   // Tracks the raw A1-style address the user is typing per binding row (display only)
   const [cellRefInputs, setCellRefInputs] = useState<Record<number, string>>({});
   const [seriesRefInputs, setSeriesRefInputs] = useState<Record<number, string>>({});
 
   // Range input strings (display only — not in envelope directly)
   const [rangeInputs, setRangeInputs] = useState<Record<string, string>>({});
+  const [rowFilterRangeInput, setRowFilterRangeInput] = useState<string>(ui.rowFilter.range);
+  const [rowFilterRangeError, setRowFilterRangeError] = useState<string>('');
+
+  // Add/Edit Filter modal state (Configurator Overlay Pattern — see CLAUDE.md)
+  const [isFilterModalOpen, setIsFilterModalOpen] = useState(false);
+  const [filterModalX, setFilterModalX] = useState(0);
+  const [filterModalY, setFilterModalY] = useState(0);
+  const [editingFilterId, setEditingFilterId] = useState<string | null>(null);
+  const [filterNameInput, setFilterNameInput] = useState('');
+  const [filterColorInput, setFilterColorInput] = useState('#0073ea');
+  const [filterIconInput, setFilterIconInput] = useState(DEFAULT_ROW_FILTER_ICON);
+  const [filterNameError, setFilterNameError] = useState('');
 
   useEffect(() => {
     if (config) {
@@ -165,6 +182,8 @@ export function TableWidgetConfiguration(props: TableWidgetConfigurationProps) {
       setShowExportButton(u.style.showExportButton);
       setCellBindings(u.cellBindings);
       setSeriesBindings(u.seriesBindings);
+      setRowFilter(u.rowFilter);
+      setRowFilterRangeInput(u.rowFilter.range);
       setCellRefInputs({});
       setSeriesRefInputs({});
     }
@@ -182,6 +201,7 @@ export function TableWidgetConfiguration(props: TableWidgetConfigurationProps) {
     conditionalRules: ConditionalRule[];
     cellBindings: CellBinding[];
     seriesBindings: SeriesBinding[];
+    rowFilter: RowFilterConfig;
     cardStyle: TableWidgetCardStyle;
     titleStyle: TableWidgetTitleStyle;
     tableBorderStyle: TableBorderStyle;
@@ -197,6 +217,7 @@ export function TableWidgetConfiguration(props: TableWidgetConfigurationProps) {
       conditionalRules:  overrides?.conditionalRules  ?? conditionalRules,
       cellBindings:      overrides?.cellBindings      ?? cellBindings,
       seriesBindings:    overrides?.seriesBindings    ?? seriesBindings,
+      rowFilter:         overrides?.rowFilter         ?? rowFilter,
       cardStyle:         overrides?.cardStyle         ?? cardStyle,
       titleStyle:        overrides?.titleStyle        ?? titleStyle,
       tableBorderStyle:  overrides?.tableBorderStyle  ?? tableBorderStyle,
@@ -215,6 +236,7 @@ export function TableWidgetConfiguration(props: TableWidgetConfigurationProps) {
       conditionalRules: resolved.conditionalRules,
       cellBindings:     resolved.cellBindings,
       seriesBindings:   resolved.seriesBindings,
+      rowFilter:        resolved.rowFilter,
       style: {
         card:             resolved.cardStyle,
         title:            resolved.titleStyle,
@@ -226,6 +248,54 @@ export function TableWidgetConfiguration(props: TableWidgetConfigurationProps) {
     const envelope = buildEnvelope(config, uiConfig, resolved.title);
     console.log('[TableWidgetConfiguration] envelope', envelope, '| editMode:', editMode ?? false);
     onChange(envelope);
+  }
+
+  // ── Debounced emit for free-text fields ─────────────────────────────────────
+  // Typing a title/range/value fires onChange once per keystroke; emitting the
+  // full envelope on every keystroke is what makes the host (and, upstream, a
+  // resolveAndCompute round-trip) fire far more often than needed. These fields
+  // coalesce rapid keystrokes into a single emit ~150ms after the user pauses.
+  // Local component state (the text the user sees) still updates instantly —
+  // only the outbound onChange() is delayed. Discrete actions (toggles, add/
+  // remove/reorder, color/select pickers) stay on the immediate `emit` above,
+  // since there's no keystroke burst to coalesce and instant feedback matters.
+  //
+  // `emitRef` always points at the *latest* `emit` closure (refreshed every
+  // render) so a debounced call that fires after other, immediate edits have
+  // already landed still reads their current values instead of clobbering
+  // them with whatever was in scope when the timer was scheduled.
+  const emitRef = useRef(emit);
+  emitRef.current = emit;
+
+  const titleDebounceRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const ruleDebounceRefs = useRef<Record<string, ReturnType<typeof setTimeout>>>({});
+  const rowFilterDebounceRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+
+  useEffect(() => {
+    return () => {
+      if (titleDebounceRef.current) clearTimeout(titleDebounceRef.current);
+      if (rowFilterDebounceRef.current) clearTimeout(rowFilterDebounceRef.current);
+      Object.values(ruleDebounceRefs.current).forEach(clearTimeout);
+    };
+  }, []);
+
+  function emitTitleDebounced(value: string) {
+    if (titleDebounceRef.current) clearTimeout(titleDebounceRef.current);
+    titleDebounceRef.current = setTimeout(() => emitRef.current({ title: value }), 150);
+  }
+
+  function updateRuleDebounced(ruleId: string, patch: Partial<ConditionalRule>) {
+    const next = conditionalRules.map((r) => (r.id === ruleId ? { ...r, ...patch } : r));
+    setConditionalRules(next);
+    if (ruleDebounceRefs.current[ruleId]) clearTimeout(ruleDebounceRefs.current[ruleId]);
+    ruleDebounceRefs.current[ruleId] = setTimeout(() => emitRef.current({ conditionalRules: next }), 150);
+  }
+
+  function updateRowFilterDebounced(patch: Partial<RowFilterConfig>) {
+    const next = { ...rowFilter, ...patch };
+    setRowFilter(next);
+    if (rowFilterDebounceRef.current) clearTimeout(rowFilterDebounceRef.current);
+    rowFilterDebounceRef.current = setTimeout(() => emitRef.current({ rowFilter: next }), 150);
   }
 
   function updateCardStyle(patch: Partial<TableWidgetCardStyle>) {
@@ -323,8 +393,88 @@ export function TableWidgetConfiguration(props: TableWidgetConfigurationProps) {
     emit({ seriesBindings: next });
   }
 
+  // ── Row Filter helpers ──────────────────────────────────────────────────────
+
+  function updateRowFilter(patch: Partial<RowFilterConfig>) {
+    const next = { ...rowFilter, ...patch };
+    setRowFilter(next);
+    emit({ rowFilter: next });
+  }
+
+  function updateRowFilterRange(value: string) {
+    setRowFilterRangeInput(value);
+    if (value.trim() === '') {
+      setRowFilterRangeError('');
+      updateRowFilterDebounced({ range: '', colIndex: null, startRow: null, endRow: null });
+      return;
+    }
+    const parsed = parseRowFilterRange(value);
+    if (!parsed) {
+      setRowFilterRangeError('Range must be a single column, e.g. A2:A10');
+      return;
+    }
+    setRowFilterRangeError('');
+    updateRowFilterDebounced({ range: value, ...parsed });
+  }
+
+  function moveFilter(id: string, dir: 'up' | 'down') {
+    const idx = rowFilter.filters.findIndex((f) => f.id === id);
+    if (idx < 0) return;
+    const next = [...rowFilter.filters];
+    const swapIdx = dir === 'up' ? idx - 1 : idx + 1;
+    if (swapIdx < 0 || swapIdx >= next.length) return;
+    [next[idx], next[swapIdx]] = [next[swapIdx], next[idx]];
+    updateRowFilter({ filters: next });
+  }
+
+  function removeFilter(id: string) {
+    updateRowFilter({ filters: rowFilter.filters.filter((f) => f.id !== id) });
+  }
+
+  function openFilterModal(e: React.MouseEvent, filter?: RowFilterItem) {
+    e.stopPropagation();
+    if (configRef.current) {
+      const rect = configRef.current.getBoundingClientRect();
+      setFilterModalX(rect.right + 30);
+      setFilterModalY(rect.top);
+    }
+    setEditingFilterId(filter?.id ?? null);
+    setFilterNameInput(filter?.name ?? '');
+    setFilterColorInput(filter?.color ?? '#0073ea');
+    setFilterIconInput(filter?.icon ?? DEFAULT_ROW_FILTER_ICON);
+    setFilterNameError('');
+    setIsFilterModalOpen(true);
+  }
+
+  function closeFilterModal() {
+    setIsFilterModalOpen(false);
+    setEditingFilterId(null);
+    setFilterNameInput('');
+    setFilterColorInput('#0073ea');
+    setFilterIconInput(DEFAULT_ROW_FILTER_ICON);
+    setFilterNameError('');
+  }
+
+  function submitFilterModal() {
+    const name = filterNameInput.trim();
+    if (!name) { setFilterNameError('Name is required'); return; }
+    const isDuplicate = rowFilter.filters.some(
+      (f) => f.id !== editingFilterId && f.name.trim().toLowerCase() === name.toLowerCase(),
+    );
+    if (isDuplicate) { setFilterNameError('A filter with this name already exists'); return; }
+
+    const next = editingFilterId
+      ? rowFilter.filters.map((f) =>
+          f.id === editingFilterId ? { ...f, name, color: filterColorInput, icon: filterIconInput } : f,
+        )
+      : [...rowFilter.filters, { id: `filter_${Date.now()}`, name, color: filterColorInput, icon: filterIconInput }];
+
+    updateRowFilter({ filters: next });
+    closeFilterModal();
+  }
+
   return (
-    <div className="wt-config">
+    <div className="wt-config" ref={configRef}>
       <div className="wt-config__header">
         {onBack && (
           <Button
@@ -349,6 +499,10 @@ export function TableWidgetConfiguration(props: TableWidgetConfigurationProps) {
           className={`wt-config__tab${activeTab === 'style' ? ' wt-config__tab--active' : ''}`}
           onClick={() => setActiveTab('style')}
         >Style</button>
+        <button
+          className={`wt-config__tab${activeTab === 'filter' ? ' wt-config__tab--active' : ''}`}
+          onClick={() => setActiveTab('filter')}
+        >Filter</button>
       </div>
 
       {activeTab === 'general' ? (
@@ -360,7 +514,7 @@ export function TableWidgetConfiguration(props: TableWidgetConfigurationProps) {
             value={title}
             onChange={({ value }: { name: string; value: string }) => {
               setTitle(value);
-              emit({ title: value });
+              emitTitleDebounced(value);
             }}
           />
 
@@ -490,7 +644,7 @@ export function TableWidgetConfiguration(props: TableWidgetConfigurationProps) {
                       value={rangeInputs[rule.id] ?? ''}
                       onChange={({ value }: { name: string; value: string }) => {
                         setRangeInputs((prev) => ({ ...prev, [rule.id]: value }));
-                        updateRule(rule.id, { range: parseRangeString(value) });
+                        updateRuleDebounced(rule.id, { range: parseRangeString(value) });
                       }}
                     />
                   </div>
@@ -517,7 +671,7 @@ export function TableWidgetConfiguration(props: TableWidgetConfigurationProps) {
                         placeholder="0"
                         value={rule.value1}
                         onChange={({ value }: { name: string; value: string }) =>
-                          updateRule(rule.id, { value1: value })
+                          updateRuleDebounced(rule.id, { value1: value })
                         }
                       />
                     </div>
@@ -528,7 +682,7 @@ export function TableWidgetConfiguration(props: TableWidgetConfigurationProps) {
                           placeholder="100"
                           value={rule.value2}
                           onChange={({ value }: { name: string; value: string }) =>
-                            updateRule(rule.id, { value2: value })
+                            updateRuleDebounced(rule.id, { value2: value })
                           }
                         />
                       </div>
@@ -761,7 +915,7 @@ export function TableWidgetConfiguration(props: TableWidgetConfigurationProps) {
 
         </div>
 
-      ) : (
+      ) : activeTab === 'style' ? (
 
         <div className="wt-config__body">
 
@@ -1001,6 +1155,198 @@ export function TableWidgetConfiguration(props: TableWidgetConfigurationProps) {
           </div>
 
         </div>
+
+      ) : (
+
+        <div className="wt-config__body">
+
+          <p className="wt-config__section-title">Range</p>
+          <TextInput
+            label="Column range"
+            placeholder="e.g. A2:A10"
+            value={rowFilterRangeInput}
+            onChange={({ value }: { name: string; value: string }) => updateRowFilterRange(value)}
+          />
+          {rowFilterRangeError && (
+            <p className="wt-config__hint wt-rowfilter-error">{rowFilterRangeError}</p>
+          )}
+
+          <p className="wt-config__section-title">Filter Type</p>
+          <div className="wt-seg-group">
+            {([
+              { value: 'chips', label: 'Chips' },
+              { value: 'dropdown', label: 'Dropdown' },
+            ] as { value: RowFilterType; label: string }[]).map(({ value, label }) => (
+              <button
+                key={value}
+                className={`wt-seg-btn${rowFilter.filterType === value ? ' wt-seg-btn--active' : ''}`}
+                onClick={() => updateRowFilter({ filterType: value })}
+              >{label}</button>
+            ))}
+          </div>
+
+          <div
+            className="wt-style-toggle"
+            onClick={() => updateRowFilter({ enableCount: !rowFilter.enableCount })}
+            role="switch"
+            aria-checked={rowFilter.enableCount}
+          >
+            <div className="wt-style-toggle__info">
+              <span className="wt-style-toggle__label">Show instance count</span>
+              <span className="wt-style-toggle__hint">Display the number of matching rows next to each filter</span>
+            </div>
+            <div className={`wt-style-switch${rowFilter.enableCount ? ' wt-style-switch--on' : ''}`}>
+              <div className="wt-style-switch__thumb" />
+            </div>
+          </div>
+
+          <div
+            className="wt-style-toggle"
+            onClick={() => updateRowFilter({ hideNonMatching: !rowFilter.hideNonMatching })}
+            role="switch"
+            aria-checked={rowFilter.hideNonMatching}
+          >
+            <div className="wt-style-toggle__info">
+              <span className="wt-style-toggle__label">Hide non-matching rows</span>
+              <span className="wt-style-toggle__hint">Rows that don't match any filter are hidden. All filters are shown by default — deselect a chip to hide that category too</span>
+            </div>
+            <div className={`wt-style-switch${rowFilter.hideNonMatching ? ' wt-style-switch--on' : ''}`}>
+              <div className="wt-style-switch__thumb" />
+            </div>
+          </div>
+
+          <div
+            className="wt-style-toggle"
+            onClick={() => updateRowFilter({ enableColor: !rowFilter.enableColor })}
+            role="switch"
+            aria-checked={rowFilter.enableColor}
+          >
+            <div className="wt-style-toggle__info">
+              <span className="wt-style-toggle__label">Highlight matching rows (optional)</span>
+              <span className="wt-style-toggle__hint">Tint a row with the active filter's color — can be used with or without hiding</span>
+            </div>
+            <div className={`wt-style-switch${rowFilter.enableColor ? ' wt-style-switch--on' : ''}`}>
+              <div className="wt-style-switch__thumb" />
+            </div>
+          </div>
+
+          {/* ── Filters list ── */}
+          <div className="wt-cf-section-head">
+            <p className="wt-config__section-title" style={{ margin: 0 }}>Filters</p>
+            <button className="wt-cf-add-icon-btn" title="Add filter" onClick={(e) => openFilterModal(e)}>
+              <Plus size={14} />
+            </button>
+          </div>
+
+          {rowFilter.filters.length === 0 && (
+            <p className="wt-config__hint">No filters yet. Click ＋ to add one.</p>
+          )}
+
+          {rowFilter.filters.map((filter, idx) => {
+            const Icon = ROW_FILTER_ICONS[filter.icon];
+            return (
+              <div key={filter.id} className="wt-rowfilter-filter-row">
+                {Icon && (
+                  <span className="wt-rowfilter-filter-row__icon" style={{ color: filter.color }}>
+                    <Icon size={14} />
+                  </span>
+                )}
+                <span className="wt-rowfilter-filter-row__swatch" style={{ backgroundColor: filter.color }} />
+                <span className="wt-rowfilter-filter-row__name">{filter.name}</span>
+                <div className="wt-cf-rule__actions">
+                  <button className="wt-cf-icon-btn" title="Move up"   disabled={idx === 0}                          onClick={() => moveFilter(filter.id, 'up')}>  <ChevronUp   size={11} /></button>
+                  <button className="wt-cf-icon-btn" title="Move down" disabled={idx === rowFilter.filters.length - 1} onClick={() => moveFilter(filter.id, 'down')}><ChevronDown size={11} /></button>
+                  <button className="wt-cf-icon-btn" title="Edit filter" onClick={(e) => openFilterModal(e, filter)}><Edit2 size={11} /></button>
+                  <button className="wt-cf-icon-btn wt-cf-icon-btn--danger" title="Delete filter" onClick={() => removeFilter(filter.id)}><X size={11} /></button>
+                </div>
+              </div>
+            );
+          })}
+
+        </div>
+      )}
+
+      {/* ── Add/Edit Filter modal (Configurator Overlay Pattern) ── */}
+      {isFilterModalOpen && (
+        <Modal
+          {...({ transparent: true } as any)}
+          isOpen={isFilterModalOpen}
+          positionX={filterModalX}
+          positionY={filterModalY}
+          className="wt-rowfilter-modal"
+          onClose={closeFilterModal}
+          header={<ModalHeader title={editingFilterId ? 'Edit Filter' : 'Add Filter'} onClose={closeFilterModal} />}
+          footer={
+            <ModalFooter
+              primaryAction={
+                <Button
+                  variant="Primary"
+                  size="Small"
+                  label={editingFilterId ? 'Save Filter' : 'Add Filter'}
+                  onClick={submitFilterModal}
+                />
+              }
+            />
+          }
+        >
+          <ModalBody>
+            <div className="wt-rowfilter-modal__body">
+              <TextInput
+                label="Name"
+                placeholder="e.g. Fail"
+                value={filterNameInput}
+                onChange={({ value }: { name: string; value: string }) => {
+                  setFilterNameInput(value);
+                  setFilterNameError('');
+                }}
+              />
+              {filterNameError && <p className="wt-config__hint wt-rowfilter-error">{filterNameError}</p>}
+
+              <div className="wt-config__field">
+                <span className="wt-config__label BodySmallDefault">Color</span>
+                <Popover
+                  trigger={
+                    <button className="wt-style-color-btn">
+                      <span
+                        className="wt-style-color-swatch"
+                        style={{ backgroundColor: filterColorInput, border: '1px solid rgba(0,0,0,0.12)' }}
+                      />
+                      <span className="wt-style-color-label">{filterColorInput}</span>
+                    </button>
+                  }
+                  placement="Bottom Start"
+                >
+                  <PopoverBody>
+                    <ColorPicker
+                      selectedColor={filterColorInput}
+                      onColorSelect={(color) => setFilterColorInput(color)}
+                    />
+                  </PopoverBody>
+                </Popover>
+              </div>
+
+              <div className="wt-rowfilter-icon-field">
+                <span className="wt-config__label BodySmallDefault">Icon</span>
+                <div className="wt-rowfilter-icon-grid">
+                  {ROW_FILTER_ICON_NAMES.map((name) => {
+                    const Icon = ROW_FILTER_ICONS[name];
+                    return (
+                      <button
+                        key={name}
+                        type="button"
+                        className={`wt-rowfilter-icon-btn${filterIconInput === name ? ' wt-rowfilter-icon-btn--active' : ''}`}
+                        title={name}
+                        onClick={() => setFilterIconInput(name)}
+                      >
+                        <Icon size={14} />
+                      </button>
+                    );
+                  })}
+                </div>
+              </div>
+            </div>
+          </ModalBody>
+        </Modal>
       )}
     </div>
   );
