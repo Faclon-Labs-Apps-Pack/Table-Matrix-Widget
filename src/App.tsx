@@ -5,7 +5,7 @@ import { TableWidgetEnvelope, DataEntry, WidgetEvent } from './iosense-sdk/types
 import { validateSSOToken } from './iosense-sdk/api';
 import { resolve } from './iosense-sdk/mini-engine';
 import { buildDynamicBindingPathList } from './iosense-sdk/bindings';
-import { useUNSTree } from './iosense-sdk/useUNSTree';
+import { useUNSTreePicker } from './iosense-sdk/useUNSTreePicker';
 import '@faclon-labs/design-sdk/styles.css';
 import './App.css';
 
@@ -17,7 +17,17 @@ export default function App() {
 
   // UNS topic browser for the widget's on-canvas Cell Config popover (dev-harness
   // side — production/Angular injects equivalents). Same hook the configurator uses.
-  const uns = useUNSTree(auth);
+  const uns = useUNSTreePicker(auth);
+
+  // Eager-load the workspace list: the widget's picker calls its own internal
+  // hook's loadWorkspaces on open, which is a no-op when the host injects the
+  // UNS source (as this harness does) — without this the injected list stays
+  // empty until the configurator's picker happens to be opened first.
+  const loadWorkspacesRef = useRef(uns.loadWorkspaces);
+  loadWorkspacesRef.current = uns.loadWorkspaces;
+  useEffect(() => {
+    if (auth) loadWorkspacesRef.current();
+  }, [auth]);
 
   useEffect(() => {
     const params = new URLSearchParams(window.location.search);
@@ -76,11 +86,15 @@ export default function App() {
         endTime: Number(event.payload.endTime),
       });
     } else if (event.type === 'CONFIG_CHANGE') {
-      // Widget edited a cell binding on the canvas — rebuild the binding index
-      // and persist the envelope; the re-resolve effect below fetches new data.
-      const { uiConfig } = event.payload;
+      // Widget edited config on the canvas. The payload carries the rebuilt
+      // binding index (the widget enforces the list-matches-uiConfig
+      // invariant itself); a host can persist the payload verbatim. The
+      // rebuild fallback is only for events from older widget builds.
+      const { uiConfig, dynamicBindingPathList } = event.payload;
       setEnvelope((prev) =>
-        prev ? { ...prev, uiConfig, dynamicBindingPathList: buildDynamicBindingPathList(uiConfig) } : prev,
+        prev
+          ? { ...prev, uiConfig, dynamicBindingPathList: dynamicBindingPathList ?? buildDynamicBindingPathList(uiConfig) }
+          : prev,
       );
     }
   }
@@ -104,10 +118,10 @@ export default function App() {
               data={data}
               onEvent={handleEvent}
               editable
-              unsTree={uns.unsTree}
-              isLoadingTree={uns.isLoadingTree}
-              onLoadWorkspaces={uns.loadWorkspaces}
-              resolveUNSValue={uns.resolveUNSValue}
+              unsWorkspaces={uns.workspaces}
+              isLoadingWorkspaces={uns.isLoadingWorkspaces}
+              loadUnsChildren={uns.loadChildren}
+              searchUnsNodes={uns.searchNodes}
             />
           </div>
         ) : (

@@ -8,6 +8,7 @@
 
 import {
   TableWidgetUIConfig,
+  TimeDisplayMode,
   TableWidgetCardStyle,
   TableWidgetTitleStyle,
   TableBorderStyle,
@@ -28,6 +29,7 @@ export const DEFAULT_TITLE_STYLE: TableWidgetTitleStyle = {
   color: '',
   fontSize: 16,
   fontWeight: 'regular',
+  align: 'left',
 };
 
 export const DEFAULT_TABLE_STYLE: TableWidgetUIConfig['style'] = {
@@ -35,6 +37,7 @@ export const DEFAULT_TABLE_STYLE: TableWidgetUIConfig['style'] = {
   title: DEFAULT_TITLE_STYLE,
   tableBorderStyle: 'all',
   showExportButton: true,
+  showSearch: false,
 };
 
 export const DEFAULT_ROW_FILTER_CONFIG: RowFilterConfig = {
@@ -62,6 +65,11 @@ export const DEFAULT_TABLE_WIDGET_UI_CONFIG: TableWidgetUIConfig = {
   cellBindings: [],
   seriesBindings: [],
   rowFilter: DEFAULT_ROW_FILTER_CONFIG,
+  dataPrecision: 2,
+  timeDisplay: 'local',
+  cells: {},
+  columnWidths: [],
+  rowHeights: [],
   style: DEFAULT_TABLE_STYLE,
 };
 
@@ -74,9 +82,25 @@ export type PartialTableWidgetUIConfig =
       title: Partial<TableWidgetTitleStyle>;
       tableBorderStyle: TableBorderStyle;
       showExportButton: boolean;
+      showSearch: boolean;
     }>;
     rowFilter?: Partial<Omit<RowFilterConfig, 'filters'>> & { filters?: RowFilterItem[] };
   };
+
+// A spread merge only replaces keys that are `undefined` — a host that stores
+// an unset list as `null` (or as an object, after a JSON round-trip through a
+// schema that drops empty arrays) would otherwise hand the renderer a `null`
+// where it iterates. These two coercions make every collection key safe to
+// `.map` / `.find` / `Object.entries` without a call-site guard.
+function arr<T>(value: unknown, fallback: T[]): T[] {
+  return Array.isArray(value) ? (value as T[]) : fallback;
+}
+
+function obj<T>(value: unknown, fallback: Record<string, T>): Record<string, T> {
+  return value !== null && typeof value === 'object' && !Array.isArray(value)
+    ? (value as Record<string, T>)
+    : fallback;
+}
 
 // Deep-merge an incoming (possibly partial / undefined) uiConfig over the
 // defaults, returning a fully-populated config safe for the renderer.
@@ -89,6 +113,18 @@ export function withTableWidgetDefaults(
   return {
     ...DEFAULT_TABLE_WIDGET_UI_CONFIG,
     ...c,
+    conditionalRules: arr(c.conditionalRules, DEFAULT_TABLE_WIDGET_UI_CONFIG.conditionalRules),
+    cellBindings:     arr(c.cellBindings,     DEFAULT_TABLE_WIDGET_UI_CONFIG.cellBindings),
+    seriesBindings:   arr(c.seriesBindings,   DEFAULT_TABLE_WIDGET_UI_CONFIG.seriesBindings),
+    columnWidths:     arr(c.columnWidths,     DEFAULT_TABLE_WIDGET_UI_CONFIG.columnWidths),
+    rowHeights:       arr(c.rowHeights,       DEFAULT_TABLE_WIDGET_UI_CONFIG.rowHeights),
+    cells:            obj(c.cells,            DEFAULT_TABLE_WIDGET_UI_CONFIG.cells),
+    // `dataPrecision: null` is a meaningful value ("leave the number alone"),
+    // so it must survive the merge — only `undefined` falls back to the default.
+    dataPrecision: c.dataPrecision === undefined
+      ? DEFAULT_TABLE_WIDGET_UI_CONFIG.dataPrecision
+      : c.dataPrecision,
+    timeDisplay: (c.timeDisplay === 'utc' ? 'utc' : 'local') as TimeDisplayMode,
     style: {
       ...DEFAULT_TABLE_STYLE,
       ...style,
@@ -98,7 +134,7 @@ export function withTableWidgetDefaults(
     rowFilter: {
       ...DEFAULT_ROW_FILTER_CONFIG,
       ...rowFilter,
-      filters: rowFilter.filters ?? DEFAULT_ROW_FILTER_CONFIG.filters,
+      filters: arr(rowFilter.filters, DEFAULT_ROW_FILTER_CONFIG.filters),
     },
   };
 }

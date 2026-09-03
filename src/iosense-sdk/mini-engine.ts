@@ -1,10 +1,23 @@
 import { TableWidgetEnvelope, TableWidgetUIConfig, DataEntry, Duration } from './types';
-import { resolveAndCompute } from './api';
+import { resolveAndCompute, ResolveRow, ResolveTimeFrame } from './api';
 
 interface MiniEngineCtx {
   authentication: string;
   override?: { startTime: number; endTime: number };
 }
+
+// Bucket size used for series bindings when the envelope carries no timeConfig
+// (the dev harness never sets one). Series rows come back one slot per bucket,
+// so this is what decides how many cells a series fills over the window.
+const DEFAULT_TIME_FRAME: ResolveTimeFrame = 'hour';
+
+const PERIODICITY_TO_TIME_FRAME: Record<string, ResolveTimeFrame> = {
+  minute:  'minute',
+  hourly:  'hour',
+  daily:   'day',
+  weekly:  'week',
+  monthly: 'month',
+};
 
 export async function resolve(
   envelope: TableWidgetEnvelope,
@@ -16,16 +29,75 @@ export async function resolve(
   if (bindings.length === 0) return { config: envelope.uiConfig, data: [] };
 
   try {
-    const items = await resolveAndCompute(
+    const rows = await resolveAndCompute(
       ctx.authentication,
-      bindings.map(({ key, topic }) => ({ key, topic })),
+      // `type` matters: series entries must be sent as `type: 'series'` or the
+      // endpoint returns a single value instead of the bucketed `slots`.
+      bindings.map(({ key, topic, type }) => (type ? { key, topic, type } : { key, topic })),
       startTime,
       endTime,
+      {
+        timeFrame: computeTimeFrame(envelope),
+        timezone: computeTimezone(envelope),
+      },
     );
-    const data: DataEntry[] = items.map((item) => ({ key: item.key, value: item.value }));
+    const data = rows.map(toDataEntry).filter((entry): entry is DataEntry => entry !== null);
     return { config: envelope.uiConfig, data };
-  } catch {
+  } catch (err) {
+    console.error('[MiniEngine] resolveAndCompute failed', err);
     return { config: envelope.uiConfig, data: [] };
+  }
+}
+
+// Map one response row to a DataEntry. Series rows arrive as `slots` — one
+// bucket per time step — which flatten to the value array the widget spreads
+// across cells; `slots` rides along so the labels/timestamps stay available.
+// Failed and skipped rows are dropped (with a log) rather than written to the
+// widget as an undefined value that would blank the cell.
+function toDataEntry(row: ResolveRow): DataEntry | null {
+  if (row.error) {
+    console.error(`[MiniEngine] "${row.key}" failed to resolve: ${row.error}`);
+    return null;
+  }
+  if (row.skipped) {
+    console.warn(`[MiniEngine] "${row.key}" skipped: ${row.reason ?? 'leaf is not computable'}`);
+    return null;
+  }
+  if (row.slots) {
+    return { key: row.key, value: row.slots.map((slot) => slot.value), slots: row.slots };
+  }
+  if (row.value === undefined) {
+    console.warn(`[MiniEngine] "${row.key}" resolved with neither value nor slots`, row);
+    return null;
+  }
+  return { key: row.key, value: row.value };
+}
+
+// Bucket size for series rows, from the envelope's periodicity.
+function computeTimeFrame(envelope: TableWidgetEnvelope): ResolveTimeFrame {
+  const periodicity = envelope.timeConfig?.defaultPeriodicity;
+  return (periodicity && PERIODICITY_TO_TIME_FRAME[periodicity]) || DEFAULT_TIME_FRAME;
+}
+
+// Which clock the buckets are cut and labelled against.
+//
+// `uiConfig.timeDisplay` is the operator-facing switch and wins over the
+// envelope's timeConfig: a table set to "Global (UTC)" must read the same for
+// every viewer, whatever browser it is opened in, while "Local" follows the
+// viewer. Only when the widget has no opinion does the envelope's own timezone
+// apply.
+function computeTimezone(envelope: TableWidgetEnvelope): string | undefined {
+  const mode = envelope.uiConfig?.timeDisplay;
+  if (mode === 'utc') return 'UTC';
+  if (mode === 'local') return localTimezone();
+  return envelope.timeConfig?.timezone || localTimezone();
+}
+
+function localTimezone(): string | undefined {
+  try {
+    return Intl.DateTimeFormat().resolvedOptions().timeZone;
+  } catch {
+    return undefined;
   }
 }
 

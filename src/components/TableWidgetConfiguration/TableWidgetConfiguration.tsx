@@ -1,19 +1,23 @@
 import { useState, useEffect, useRef } from 'react';
-import { TextInput, CounterInput, Button, Popover, PopoverBody } from '@faclon-labs/design-sdk';
+import { TextInput, CounterInput, Button, Switch, SelectInput, DropdownMenu, ActionListItem, ColorInput, UNSTreePicker } from '@faclon-labs/design-sdk';
 import { Modal, ModalHeader, ModalBody, ModalFooter } from '@faclon-labs/design-sdk/Modal';
-import { UNSPathInput } from '@faclon-labs/design-sdk/UNSPathInput';
-import { ColorPicker } from '@faclon-labs/design-sdk';
-import { Bold, Italic, ChevronUp, ChevronDown, X, Plus, Grid, Type, ArrowRight, ArrowDown, ArrowLeft, Filter, Edit2 } from 'react-feather';
+import type { UNSNode, UNSWorkspace } from '@faclon-labs/design-sdk/UNSTreePicker';
+import { Bold, Italic, ChevronUp, ChevronDown, X, Plus, Grid, Type, ArrowRight, ArrowDown, ArrowLeft, AlignLeft, AlignCenter, AlignRight, Filter, Edit2 } from 'react-feather';
 import {
   TableWidgetEnvelope, TableWidgetUIConfig,
   ConditionalRule, ConditionalRuleCondition,
-  TableWidgetCardStyle, TableWidgetTitleStyle, TableBorderStyle,
+  TableWidgetCardStyle, TableWidgetTitleStyle, TableBorderStyle, TitleAlign, TimeDisplayMode,
   CellBinding, SeriesBinding, SeriesDirection,
   RowFilterConfig, RowFilterItem, RowFilterType,
 } from '../../iosense-sdk/types';
 import { withTableWidgetDefaults } from '../../iosense-sdk/defaults';
-import { useUNSTree, UNSTree } from '../../iosense-sdk/useUNSTree';
-import { parseRangeString, refToCellId } from '../TableWidget/formulaEngine';
+// Single source of truth for the binding index — shared with the dev harness so
+// the configurator path and the on-canvas CONFIG_CHANGE path can never drift
+// (they must both tag series bindings with `type: 'series'`).
+import { buildDynamicBindingPathList } from '../../iosense-sdk/bindings';
+import { useUNSTreePicker } from '../../iosense-sdk/useUNSTreePicker';
+import { useZoneIgnorePortals } from '../../iosense-sdk/zoneIgnorePortals';
+import { parseRangeString, rangeToString, refToCellId, cellIdToRef } from '../TableWidget/formulaEngine';
 import { ROW_FILTER_ICONS, ROW_FILTER_ICON_NAMES, DEFAULT_ROW_FILTER_ICON, parseRowFilterRange } from '../TableWidget/rowFilter';
 import './TableWidgetConfiguration.css';
 
@@ -26,41 +30,13 @@ interface TableWidgetConfigurationProps {
   /** Host-provided back navigation. When present a back button renders in the
    *  config header and clicking it calls this. Absent → no button rendered. */
   onBack?: () => void;
-  /** Angular-injected UNS tree. When all three injection props are present the
-   *  configurator uses them; otherwise it falls back to the useUNSTree hook. */
-  unsTree?: UNSTree;
-  isLoadingTree?: boolean;
-  onLoadWorkspaces?: () => void | Promise<void>;
-  resolveUNSValue?: (raw: string) => string;
+  /** Host-injected UNS source. Gated on the PAIR `unsWorkspaces` + `loadUnsChildren`;
+   *  when either is missing the useUNSTreePicker hook stands in (dev harness). */
+  unsWorkspaces?: UNSWorkspace[];
+  isLoadingWorkspaces?: boolean;
+  loadUnsChildren?: (wsId: string, parentId?: string) => Promise<UNSNode[]>;
+  searchUnsNodes?: (wsId: string, query: string, limit?: number) => Promise<UNSNode[]>;
   onChange: (config: TableWidgetEnvelope) => void;
-}
-
-// Extract the bare UNS topic from a stored binding value. Mapped values are
-// wrapped as "{{uns:wsId://path}}"; a raw pasted "uns:wsId://path" is accepted
-// as-is. Returns '' for empty / unmapped input so it is skipped.
-function extractTopic(raw: string | undefined): string {
-  const t = (raw ?? '').trim();
-  const m = /^\{\{(.+)\}\}$/.exec(t);
-  return (m ? m[1] : t).trim();
-}
-
-// Build the binding index the mini-engine resolves. Cell bindings use the
-// target cellId as the key so the resolved DataEntry lands directly on that
-// cell; series bindings use a "series:<baseCellId>" key the widget expands.
-function buildDynamicBindingPathList(uiConfig: TableWidgetUIConfig): Array<{ key: string; topic: string }> {
-  const paths: Array<{ key: string; topic: string }> = [];
-
-  for (const b of uiConfig.cellBindings) {
-    const topic = extractTopic(b.topic);
-    if (b.cellId && topic) paths.push({ key: b.cellId, topic });
-  }
-
-  for (const s of uiConfig.seriesBindings) {
-    const topic = extractTopic(s.topic);
-    if (s.baseCellId && topic) paths.push({ key: `series:${s.baseCellId}`, topic });
-  }
-
-  return paths;
 }
 
 function buildEnvelope(
@@ -77,18 +53,55 @@ function buildEnvelope(
   };
 }
 
-function cellIdToRef(cellId: string): string {
-  const m = /^R(\d+)C(\d+)$/.exec(cellId);
-  if (!m) return '';
-  const row = parseInt(m[1], 10);
-  const col = parseInt(m[2], 10);
-  let col26 = '';
-  let c = col;
-  do {
-    col26 = String.fromCharCode(65 + (c % 26)) + col26;
-    c = Math.floor(c / 26) - 1;
-  } while (c >= 0);
-  return `${col26}${row + 1}`;
+// cellIdToRef is imported from formulaEngine — one A1 grammar for the whole widget.
+
+// Row layout around the design-sdk Switch. The SDK Switch is a bare toggle
+// (it takes only an accessibilityLabel), so the title/help-text row lives here
+// while the control itself stays a design-sdk component rather than the
+// hand-rolled div switch this replaced.
+function ToggleRow({ label, hint, checked, onChange }: {
+  label: string;
+  hint?: string;
+  checked: boolean;
+  onChange: (next: boolean) => void;
+}) {
+  return (
+    <div className="wt-style-toggle">
+      <div className="wt-style-toggle__info">
+        <span className="wt-style-toggle__label">{label}</span>
+        {hint && <span className="wt-style-toggle__hint">{hint}</span>}
+      </div>
+      <Switch
+        accessibilityLabel={label}
+        size="Small"
+        isChecked={checked}
+        onChange={({ isChecked }: { isChecked: boolean }) => onChange(isChecked)}
+      />
+    </div>
+  );
+}
+
+// Plain-language readout of the cells a series will populate. Without this the
+// only way to discover that a 24-bucket series lands in 9 cells of a 10-row
+// grid is to bind it and count — the exact confusion behind "the response is
+// there but the cells are empty".
+function describeSeriesSpan(series: SeriesBinding, rows: number, columns: number): string {
+  const m = /^R(\d+)C(\d+)$/.exec(series.baseCellId);
+  if (!m) return 'Enter a base cell (e.g. A2) to place this series.';
+  const r0 = parseInt(m[1], 10);
+  const c0 = parseInt(m[2], 10);
+  if (r0 >= rows || c0 >= columns) {
+    return `${cellIdToRef(series.baseCellId)} is outside the ${rows}×${columns} grid — nothing will be filled.`;
+  }
+  const room = series.direction === 'vertical' ? rows - r0 : columns - c0;
+  const capped = series.limit > 0 ? Math.min(series.limit, room) : room;
+  const lastRow = series.direction === 'vertical' ? r0 + capped - 1 : r0;
+  const lastCol = series.direction === 'horizontal' ? c0 + capped - 1 : c0;
+  const span = capped <= 1
+    ? cellIdToRef(series.baseCellId)
+    : `${cellIdToRef(series.baseCellId)}:${cellIdToRef(`R${lastRow}C${lastCol}`)}`;
+  const cappedBy = series.limit > 0 && series.limit <= room ? 'max cells' : 'grid size';
+  return `Fills ${span} — up to ${capped} bucket${capped === 1 ? '' : 's'} (capped by ${cappedBy}). Extra buckets are dropped.`;
 }
 
 const CONDITION_LABELS: Record<ConditionalRuleCondition, string> = {
@@ -114,19 +127,27 @@ export function TableWidgetConfiguration(props: TableWidgetConfigurationProps) {
   const [activeTab, setActiveTab] = useState<'general' | 'style' | 'filter'>('general');
   const configRef = useRef<HTMLDivElement>(null);
 
-  // UNS topic browser source. Prefer Angular-injected props when all three are
-  // present; otherwise fall back to the dev-harness hook (fetches workspaces +
-  // nodes itself from the bearer token). Without this wiring UNSPathInput has an
-  // empty tree and shows no topics — which is the bug this fixes.
-  const hook = useUNSTree(authentication);
+  // UNS topic browser source. Prefer Angular-injected props when the workspace
+  // list and the child loader are both present; otherwise fall back to the
+  // dev-harness hook (fetches workspaces + nodes itself from the bearer token).
+  // UNSTreePicker builds the {{uns:wsId://path}} topic from each node it hands
+  // back, so no resolve step is needed on our side any more.
+  // Keep the picker's portaled dropdown exempt from the host panel's
+  // outside-click close, which would otherwise fire the moment an option is hit.
+  useZoneIgnorePortals();
+
+  // Gate on the PAIR — half an injection is not an injection. Feeding the hook
+  // `undefined` when the host injects is what makes it a genuine no-op rather
+  // than a redundant round trip behind the host's own data.
   const hasInjectedUNS =
-    props.unsTree !== undefined &&
-    props.onLoadWorkspaces !== undefined &&
-    props.resolveUNSValue !== undefined;
-  const unsTree        = hasInjectedUNS ? props.unsTree!         : hook.unsTree;
-  const isLoadingTree  = hasInjectedUNS ? (props.isLoadingTree ?? false) : hook.isLoadingTree;
-  const loadWorkspaces = hasInjectedUNS ? props.onLoadWorkspaces! : hook.loadWorkspaces;
-  const resolveUNSValue = hasInjectedUNS ? props.resolveUNSValue! : hook.resolveUNSValue;
+    props.unsWorkspaces !== undefined && props.loadUnsChildren !== undefined;
+  const hook = useUNSTreePicker(hasInjectedUNS ? undefined : authentication);
+
+  const unsWorkspaces    = hasInjectedUNS ? props.unsWorkspaces!  : hook.workspaces;
+  const isLoadingWs      = hasInjectedUNS ? (props.isLoadingWorkspaces ?? false) : hook.isLoadingWorkspaces;
+  const loadWorkspaces   = hook.loadWorkspaces;
+  const loadChildren     = hasInjectedUNS ? props.loadUnsChildren! : hook.loadChildren;
+  const searchNodes      = hasInjectedUNS ? props.searchUnsNodes   : hook.searchNodes;
 
   // The host may pass an envelope whose uiConfig is partial or missing keys.
   // Default every key through the shared helper so the form never reads undefined
@@ -144,6 +165,9 @@ export function TableWidgetConfiguration(props: TableWidgetConfigurationProps) {
   const [titleStyle, setTitleStyle] = useState<TableWidgetTitleStyle>(ui.style.title);
   const [tableBorderStyle, setTableBorderStyle] = useState<TableBorderStyle>(ui.style.tableBorderStyle);
   const [showExportButton, setShowExportButton] = useState<boolean>(ui.style.showExportButton);
+  const [showSearch, setShowSearch] = useState<boolean>(ui.style.showSearch);
+  const [dataPrecision, setDataPrecision] = useState<number | null>(ui.dataPrecision);
+  const [timeDisplay, setTimeDisplay] = useState<TimeDisplayMode>(ui.timeDisplay);
   const [cellBindings, setCellBindings] = useState<CellBinding[]>(ui.cellBindings);
   const [seriesBindings, setSeriesBindings] = useState<SeriesBinding[]>(ui.seriesBindings);
   const [rowFilter, setRowFilter] = useState<RowFilterConfig>(ui.rowFilter);
@@ -153,6 +177,9 @@ export function TableWidgetConfiguration(props: TableWidgetConfigurationProps) {
 
   // Range input strings (display only — not in envelope directly)
   const [rangeInputs, setRangeInputs] = useState<Record<string, string>>({});
+  // Which rule's condition dropdown is open (SelectInput is a controlled trigger).
+  const [openConditionRuleId, setOpenConditionRuleId] = useState<string | null>(null);
+  const [ruleRangeErrors, setRuleRangeErrors] = useState<Record<string, string>>({});
   const [rowFilterRangeInput, setRowFilterRangeInput] = useState<string>(ui.rowFilter.range);
   const [rowFilterRangeError, setRowFilterRangeError] = useState<string>('');
 
@@ -180,6 +207,9 @@ export function TableWidgetConfiguration(props: TableWidgetConfigurationProps) {
       setTitleStyle(u.style.title);
       setTableBorderStyle(u.style.tableBorderStyle);
       setShowExportButton(u.style.showExportButton);
+      setShowSearch(u.style.showSearch);
+      setDataPrecision(u.dataPrecision);
+      setTimeDisplay(u.timeDisplay);
       setCellBindings(u.cellBindings);
       setSeriesBindings(u.seriesBindings);
       setRowFilter(u.rowFilter);
@@ -188,6 +218,36 @@ export function TableWidgetConfiguration(props: TableWidgetConfigurationProps) {
       setSeriesRefInputs({});
     }
   }, [config?._id]);
+
+  // The widget canvas can change the grid size (insert/delete row/column emits
+  // CONFIG_CHANGE). Track those external changes so this panel's Rows/Columns
+  // inputs — and the next emit() — don't revert them. Watching the scalar
+  // values (not the config object) keeps the panel's other in-flight state
+  // untouched on ordinary emit round-trips.
+  useEffect(() => {
+    if (!config) return;
+    const u = withTableWidgetDefaults(config.uiConfig);
+    setRows(u.rows);
+    setColumns(u.columns);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [config?.uiConfig?.rows, config?.uiConfig?.columns]);
+
+  // Bindings are ALSO canvas-editable (the widget's Cell Config popover emits
+  // CONFIG_CHANGE with the same _id), so panel state must follow external
+  // binding changes or its next emit deletes the on-canvas binding. Keyed on
+  // the serialized arrays: the panel's own emit round-trips with identical
+  // JSON, so this never clobbers in-progress panel edits.
+  const externalBindingsJson = JSON.stringify([
+    config?.uiConfig?.cellBindings ?? null,
+    config?.uiConfig?.seriesBindings ?? null,
+  ]);
+  useEffect(() => {
+    if (!config) return;
+    const u = withTableWidgetDefaults(config.uiConfig);
+    setCellBindings(u.cellBindings);
+    setSeriesBindings(u.seriesBindings);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [externalBindingsJson]);
 
   useEffect(() => {
     emit();
@@ -206,6 +266,9 @@ export function TableWidgetConfiguration(props: TableWidgetConfigurationProps) {
     titleStyle: TableWidgetTitleStyle;
     tableBorderStyle: TableBorderStyle;
     showExportButton: boolean;
+    showSearch: boolean;
+    dataPrecision: number | null;
+    timeDisplay: TimeDisplayMode;
   }>) {
     const resolved = {
       title:             overrides?.title             ?? title,
@@ -222,14 +285,27 @@ export function TableWidgetConfiguration(props: TableWidgetConfigurationProps) {
       titleStyle:        overrides?.titleStyle        ?? titleStyle,
       tableBorderStyle:  overrides?.tableBorderStyle  ?? tableBorderStyle,
       showExportButton:  overrides?.showExportButton  ?? showExportButton,
+      showSearch:        overrides?.showSearch        ?? showSearch,
+      // `dataPrecision: null` means "don't round" — a ?? fallback would turn
+      // that choice back into the default on the next emit.
+      dataPrecision:     overrides && 'dataPrecision' in overrides ? overrides.dataPrecision! : dataPrecision,
+      timeDisplay:       overrides?.timeDisplay       ?? timeDisplay,
     };
+
+    // Fields the widget canvas owns (cell content/formats, widths, freeze) are
+    // passed through from the incoming envelope untouched — the configurator
+    // must never wipe on-canvas edits it has no UI for.
+    const passthrough = withTableWidgetDefaults(config?.uiConfig);
 
     const uiConfig: TableWidgetUIConfig = {
       title:            resolved.title,
       rows:             resolved.rows,
       columns:          resolved.columns,
-      freezeRows:       0,
-      freezeColumns:    0,
+      freezeRows:       passthrough.freezeRows,
+      freezeColumns:    passthrough.freezeColumns,
+      cells:            passthrough.cells,
+      columnWidths:     passthrough.columnWidths,
+      rowHeights:       passthrough.rowHeights,
       widgetWidth:      resolved.widgetWidth,
       widgetHeight:     resolved.widgetHeight,
       locked:           resolved.locked,
@@ -237,11 +313,14 @@ export function TableWidgetConfiguration(props: TableWidgetConfigurationProps) {
       cellBindings:     resolved.cellBindings,
       seriesBindings:   resolved.seriesBindings,
       rowFilter:        resolved.rowFilter,
+      dataPrecision:    resolved.dataPrecision,
+      timeDisplay:      resolved.timeDisplay,
       style: {
         card:             resolved.cardStyle,
         title:            resolved.titleStyle,
         tableBorderStyle: resolved.tableBorderStyle,
         showExportButton: resolved.showExportButton,
+        showSearch:       resolved.showSearch,
       },
     };
 
@@ -271,31 +350,46 @@ export function TableWidgetConfiguration(props: TableWidgetConfigurationProps) {
   const ruleDebounceRefs = useRef<Record<string, ReturnType<typeof setTimeout>>>({});
   const rowFilterDebounceRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
+  // Debounced timers fire emitRef.current() with NO overrides: by fire time the
+  // state updates have flushed, so the emit reads the freshest values. Passing
+  // the list captured at schedule time re-emitted stale state — e.g. a rule
+  // deleted inside the 150 ms window came back from the dead.
   useEffect(() => {
     return () => {
-      if (titleDebounceRef.current) clearTimeout(titleDebounceRef.current);
-      if (rowFilterDebounceRef.current) clearTimeout(rowFilterDebounceRef.current);
-      Object.values(ruleDebounceRefs.current).forEach(clearTimeout);
+      // Flush (not just cancel) anything pending so the panel unmounting
+      // within 150 ms of the last keystroke doesn't drop that edit.
+      let pending = false;
+      if (titleDebounceRef.current) { clearTimeout(titleDebounceRef.current); pending = true; }
+      if (rowFilterDebounceRef.current) { clearTimeout(rowFilterDebounceRef.current); pending = true; }
+      for (const t of Object.values(ruleDebounceRefs.current)) { clearTimeout(t); pending = true; }
+      if (pending) emitRef.current();
     };
   }, []);
 
-  function emitTitleDebounced(value: string) {
+  function emitTitleDebounced() {
     if (titleDebounceRef.current) clearTimeout(titleDebounceRef.current);
-    titleDebounceRef.current = setTimeout(() => emitRef.current({ title: value }), 150);
+    titleDebounceRef.current = setTimeout(() => {
+      titleDebounceRef.current = null;
+      emitRef.current();
+    }, 150);
   }
 
   function updateRuleDebounced(ruleId: string, patch: Partial<ConditionalRule>) {
-    const next = conditionalRules.map((r) => (r.id === ruleId ? { ...r, ...patch } : r));
-    setConditionalRules(next);
+    setConditionalRules((rules) => rules.map((r) => (r.id === ruleId ? { ...r, ...patch } : r)));
     if (ruleDebounceRefs.current[ruleId]) clearTimeout(ruleDebounceRefs.current[ruleId]);
-    ruleDebounceRefs.current[ruleId] = setTimeout(() => emitRef.current({ conditionalRules: next }), 150);
+    ruleDebounceRefs.current[ruleId] = setTimeout(() => {
+      delete ruleDebounceRefs.current[ruleId];
+      emitRef.current();
+    }, 150);
   }
 
   function updateRowFilterDebounced(patch: Partial<RowFilterConfig>) {
-    const next = { ...rowFilter, ...patch };
-    setRowFilter(next);
+    setRowFilter((rf) => ({ ...rf, ...patch }));
     if (rowFilterDebounceRef.current) clearTimeout(rowFilterDebounceRef.current);
-    rowFilterDebounceRef.current = setTimeout(() => emitRef.current({ rowFilter: next }), 150);
+    rowFilterDebounceRef.current = setTimeout(() => {
+      rowFilterDebounceRef.current = null;
+      emitRef.current();
+    }, 150);
   }
 
   function updateCardStyle(patch: Partial<TableWidgetCardStyle>) {
@@ -352,6 +446,19 @@ export function TableWidgetConfiguration(props: TableWidgetConfigurationProps) {
 
   // ── Cell binding helpers ───────────────────────────────────────────────────
 
+  // The A1-text drafts (cellRefInputs/seriesRefInputs) are keyed by row index;
+  // deleting a row must shift the keys above it down or the next row inherits
+  // the deleted row's typed text.
+  function shiftIndexKeys(map: Record<number, string>, removed: number): Record<number, string> {
+    const next: Record<number, string> = {};
+    for (const [k, v] of Object.entries(map)) {
+      const i = Number(k);
+      if (i === removed) continue;
+      next[i > removed ? i - 1 : i] = v;
+    }
+    return next;
+  }
+
   function addBinding() {
     const next = [...cellBindings, { cellId: '', topic: '' }];
     setCellBindings(next);
@@ -367,6 +474,7 @@ export function TableWidgetConfiguration(props: TableWidgetConfigurationProps) {
   function removeBinding(idx: number) {
     const next = cellBindings.filter((_, i) => i !== idx);
     setCellBindings(next);
+    setCellRefInputs((prev) => shiftIndexKeys(prev, idx));
     emit({ cellBindings: next });
   }
 
@@ -390,6 +498,7 @@ export function TableWidgetConfiguration(props: TableWidgetConfigurationProps) {
   function removeSeries(idx: number) {
     const next = seriesBindings.filter((_, i) => i !== idx);
     setSeriesBindings(next);
+    setSeriesRefInputs((prev) => shiftIndexKeys(prev, idx));
     emit({ seriesBindings: next });
   }
 
@@ -514,7 +623,7 @@ export function TableWidgetConfiguration(props: TableWidgetConfigurationProps) {
             value={title}
             onChange={({ value }: { name: string; value: string }) => {
               setTitle(value);
-              emitTitleDebounced(value);
+              emitTitleDebounced();
             }}
           />
 
@@ -581,23 +690,83 @@ export function TableWidgetConfiguration(props: TableWidgetConfigurationProps) {
             />
           </div>
 
+          <p className="wt-config__hint">
+            The size the widget asks for. A dashboard tile that gives it less room wins — the table
+            scrolls inside whatever space it actually gets.
+          </p>
+
           {/* ── Lock table layout ── */}
-          <label className="wt-lock-row">
-            <input
-              type="checkbox"
-              className="wt-lock-row__checkbox"
-              checked={locked}
-              onChange={(e) => {
-                setLocked(e.target.checked);
-                emit({ locked: e.target.checked });
+          <ToggleRow
+            label="Lock table layout"
+            hint="Read-only view: no cell editing, resizing or row/column changes. Rows and columns are scaled to fill the widget exactly, leaving no empty background."
+            checked={locked}
+            onChange={(next) => { setLocked(next); emit({ locked: next }); }}
+          />
+
+          {/* ── Data display ── */}
+          <p className="wt-config__section-title">Data Display</p>
+
+          <div className="wt-config__row">
+            <CounterInput
+              label="Decimal places"
+              value={dataPrecision ?? 0}
+              min={0}
+              max={10}
+              step={1}
+              isDisabled={dataPrecision === null}
+              onChange={({ value }: { name: string; value: number | null }) => {
+                const next = value ?? 0;
+                setDataPrecision(next);
+                emit({ dataPrecision: next });
               }}
             />
-            <div className="wt-lock-row__text">
-              <span className="wt-lock-row__label">Lock table layout</span>
-              <span className="wt-lock-row__hint">Prevents editing cells, resizing, and adding/removing rows or columns</span>
+            <div className="wt-config__field">
+              <span className="wt-config__label BodySmallDefault">Rounding</span>
+              <div className="wt-seg-group">
+                {([
+                  { value: false, label: 'Fixed' },
+                  { value: true,  label: 'Full' },
+                ] as { value: boolean; label: string }[]).map(({ value, label }) => (
+                  <button
+                    key={label}
+                    className={`wt-seg-btn${(dataPrecision === null) === value ? ' wt-seg-btn--active' : ''}`}
+                    onClick={() => {
+                      const next = value ? null : 2;
+                      setDataPrecision(next);
+                      emit({ dataPrecision: next });
+                    }}
+                  >{label}</button>
+                ))}
+              </div>
             </div>
-            {locked && <span className="wt-lock-row__badge">Locked</span>}
-          </label>
+          </div>
+          <p className="wt-config__hint">
+            Applies to every numeric cell. “Full” keeps the value exactly as the topic returned it;
+            a cell can still override this from the table toolbar.
+          </p>
+
+          <div className="wt-config__field">
+            <span className="wt-config__label BodySmallDefault">Timestamps</span>
+            <div className="wt-seg-group">
+              {([
+                { value: 'local', label: 'Local time' },
+                { value: 'utc',   label: 'Global (UTC)' },
+              ] as { value: TimeDisplayMode; label: string }[]).map(({ value, label }) => (
+                <button
+                  key={value}
+                  className={`wt-seg-btn${timeDisplay === value ? ' wt-seg-btn--active' : ''}`}
+                  onClick={() => {
+                    setTimeDisplay(value);
+                    emit({ timeDisplay: value });
+                  }}
+                >{label}</button>
+              ))}
+            </div>
+          </div>
+          <p className="wt-config__hint">
+            Which clock series buckets are cut and labelled against. “Global” reads the same for every
+            viewer regardless of their browser timezone.
+          </p>
 
           {/* ── Conditional Formatting ── */}
           <div className="wt-cf-section-head">
@@ -641,24 +810,53 @@ export function TableWidgetConfiguration(props: TableWidgetConfigurationProps) {
                     <TextInput
                       label="Range"
                       placeholder="All cells"
-                      value={rangeInputs[rule.id] ?? ''}
+                      value={rangeInputs[rule.id] ?? rangeToString(rule.range)}
                       onChange={({ value }: { name: string; value: string }) => {
                         setRangeInputs((prev) => ({ ...prev, [rule.id]: value }));
-                        updateRuleDebounced(rule.id, { range: parseRangeString(value) });
+                        // Commit only empty (= all cells) or a valid range —
+                        // an in-progress/invalid string must never silently
+                        // become range:null and apply the rule everywhere.
+                        if (value.trim() === '') {
+                          setRuleRangeErrors((prev) => ({ ...prev, [rule.id]: '' }));
+                          updateRuleDebounced(rule.id, { range: null });
+                          return;
+                        }
+                        const parsed = parseRangeString(value);
+                        if (!parsed) {
+                          setRuleRangeErrors((prev) => ({ ...prev, [rule.id]: 'Invalid range — e.g. A1 or B2:D5' }));
+                          return;
+                        }
+                        setRuleRangeErrors((prev) => ({ ...prev, [rule.id]: '' }));
+                        updateRuleDebounced(rule.id, { range: parsed });
                       }}
                     />
+                    {ruleRangeErrors[rule.id] ? (
+                      <p className="wt-cf-range-error">{ruleRangeErrors[rule.id]}</p>
+                    ) : null}
                   </div>
                   <div className="wt-cf-rule__field">
-                    <span className="wt-cf-label">Condition</span>
-                    <select
-                      className="wt-cf-select"
-                      value={rule.condition}
-                      onChange={(e) => updateRule(rule.id, { condition: e.target.value as ConditionalRuleCondition })}
+                    <SelectInput
+                      label="Condition"
+                      value={CONDITION_LABELS[rule.condition]}
+                      isOpen={openConditionRuleId === rule.id}
+                      onClick={() => setOpenConditionRuleId((id) => (id === rule.id ? null : rule.id))}
                     >
-                      {(Object.keys(CONDITION_LABELS) as ConditionalRuleCondition[]).map((c) => (
-                        <option key={c} value={c}>{CONDITION_LABELS[c]}</option>
-                      ))}
-                    </select>
+                      {openConditionRuleId === rule.id && (
+                        <DropdownMenu>
+                          {(Object.keys(CONDITION_LABELS) as ConditionalRuleCondition[]).map((c) => (
+                            <ActionListItem
+                              key={c}
+                              title={CONDITION_LABELS[c]}
+                              isSelected={rule.condition === c}
+                              onClick={() => {
+                                updateRule(rule.id, { condition: c });
+                                setOpenConditionRuleId(null);
+                              }}
+                            />
+                          ))}
+                        </DropdownMenu>
+                      )}
+                    </SelectInput>
                   </div>
                 </div>
 
@@ -696,6 +894,7 @@ export function TableWidgetConfiguration(props: TableWidgetConfigurationProps) {
 
                   <Button
                     iconOnly
+                    aria-label="Bold matching cells"
                     leadingIcon={<Bold size={12} />}
                     variant={rule.format.bold ? 'Primary' : 'Gray'}
                     size="XSmall"
@@ -703,6 +902,7 @@ export function TableWidgetConfiguration(props: TableWidgetConfigurationProps) {
                   />
                   <Button
                     iconOnly
+                    aria-label="Italicise matching cells"
                     leadingIcon={<Italic size={12} />}
                     variant={rule.format.italic ? 'Primary' : 'Gray'}
                     size="XSmall"
@@ -711,67 +911,22 @@ export function TableWidgetConfiguration(props: TableWidgetConfigurationProps) {
 
                   <div className="wt-cf-color-pair">
                     <span className="wt-cf-color-pair__label">Bg</span>
-                    <Popover
-                      trigger={
-                        <button
-                          className="wt-cf-color-btn"
-                          title="Background color"
-                          style={{ '--swatch-color': rule.format.cellColor || 'transparent' } as React.CSSProperties}
-                        >
-                          <span
-                            className="wt-cf-color-btn__swatch"
-                            style={{
-                              backgroundColor: rule.format.cellColor || 'transparent',
-                              border: rule.format.cellColor ? '1px solid rgba(0,0,0,0.12)' : '1px dashed #ccc',
-                            }}
-                          />
-                        </button>
+                    <ColorInput
+                      value={rule.format.cellColor || '#ffffff'}
+                      onChange={(color: string) =>
+                        updateRule(rule.id, { format: { ...rule.format, cellColor: color } })
                       }
-                      placement="Bottom Start"
-                    >
-                      <PopoverBody>
-                        <ColorPicker
-                          selectedColor={rule.format.cellColor || '#ffffff'}
-                          onColorSelect={(color) =>
-                            updateRule(rule.id, { format: { ...rule.format, cellColor: color } })
-                          }
-                        />
-                      </PopoverBody>
-                    </Popover>
+                    />
                   </div>
 
                   <div className="wt-cf-color-pair">
                     <span className="wt-cf-color-pair__label">Text</span>
-                    <Popover
-                      trigger={
-                        <button
-                          className="wt-cf-color-btn"
-                          title="Text color"
-                        >
-                          <span
-                            className="wt-cf-color-btn__swatch"
-                            style={{
-                              backgroundColor: rule.format.textColor || 'transparent',
-                              border: rule.format.textColor ? '1px solid rgba(0,0,0,0.12)' : '1px dashed #ccc',
-                            }}
-                          />
-                          <span
-                            className="wt-cf-color-btn__letter"
-                            style={{ color: rule.format.textColor || '#1a1a1a' }}
-                          >A</span>
-                        </button>
+                    <ColorInput
+                      value={rule.format.textColor || '#1a1a1a'}
+                      onChange={(color: string) =>
+                        updateRule(rule.id, { format: { ...rule.format, textColor: color } })
                       }
-                      placement="Bottom Start"
-                    >
-                      <PopoverBody>
-                        <ColorPicker
-                          selectedColor={rule.format.textColor || '#1a1a1a'}
-                          onColorSelect={(color) =>
-                            updateRule(rule.id, { format: { ...rule.format, textColor: color } })
-                          }
-                        />
-                      </PopoverBody>
-                    </Popover>
+                    />
                   </div>
                 </div>
 
@@ -808,14 +963,16 @@ export function TableWidgetConfiguration(props: TableWidgetConfigurationProps) {
                 />
               </div>
               <div className="wt-binding-row__topic">
-                <UNSPathInput
+                <UNSTreePicker
                   label="UNS Topic"
-                  placeholder="Type / to browse…"
+                  placeholder="Select a topic…"
                   value={binding.topic}
-                  tree={unsTree}
-                  isLoading={isLoadingTree}
+                  workspaces={unsWorkspaces}
+                  isLoadingWorkspaces={isLoadingWs}
+                  loadChildren={loadChildren}
+                  searchNodes={searchNodes}
                   onOpen={loadWorkspaces}
-                  onChange={(value) => updateBinding(idx, { topic: resolveUNSValue(value) })}
+                  onChange={(value) => updateBinding(idx, { topic: value })}
                 />
               </div>
               <button
@@ -835,6 +992,13 @@ export function TableWidgetConfiguration(props: TableWidgetConfigurationProps) {
               <Plus size={14} />
             </button>
           </div>
+
+          <p className="wt-config__hint">
+            A series binds ONE topic that resolves to a list of time buckets and spreads it from a
+            base cell — down the rows or across the columns. Bucket size comes from the dashboard
+            periodicity; “Max cells” caps how many buckets are written, and the grid itself caps the
+            rest.
+          </p>
 
           {seriesBindings.length === 0 && (
             <p className="wt-config__hint">
@@ -860,14 +1024,16 @@ export function TableWidgetConfiguration(props: TableWidgetConfigurationProps) {
                   />
                 </div>
                 <div className="wt-binding-row__topic">
-                  <UNSPathInput
+                  <UNSTreePicker
                     label="Array topic"
-                    placeholder="Type / to browse…"
+                    placeholder="Select a topic…"
                     value={series.topic}
-                    tree={unsTree}
-                    isLoading={isLoadingTree}
+                    workspaces={unsWorkspaces}
+                    isLoadingWorkspaces={isLoadingWs}
+                    loadChildren={loadChildren}
+                    searchNodes={searchNodes}
                     onOpen={loadWorkspaces}
-                    onChange={(value) => updateSeries(idx, { topic: resolveUNSValue(value) })}
+                    onChange={(value) => updateSeries(idx, { topic: value })}
                   />
                 </div>
                 <button
@@ -910,6 +1076,8 @@ export function TableWidgetConfiguration(props: TableWidgetConfigurationProps) {
                   />
                 </div>
               </div>
+
+              <p className="wt-config__hint wt-series-item__span">{describeSeriesSpan(series, rows, columns)}</p>
             </div>
           ))}
 
@@ -949,97 +1117,42 @@ export function TableWidgetConfiguration(props: TableWidgetConfigurationProps) {
                 </div>
               </div>
 
-              {/* Wrap in card toggle */}
-              <div
-                className="wt-style-toggle"
-                onClick={() => updateCardStyle({ wrapInCard: !cardStyle.wrapInCard })}
-                role="switch"
-                aria-checked={cardStyle.wrapInCard}
-              >
-                <div className="wt-style-toggle__info">
-                  <span className="wt-style-toggle__label">Wrap in card</span>
-                  <span className="wt-style-toggle__hint">Add a visible border around the widget</span>
-                </div>
-                <div className={`wt-style-switch${cardStyle.wrapInCard ? ' wt-style-switch--on' : ''}`}>
-                  <div className="wt-style-switch__thumb" />
-                </div>
-              </div>
+              <ToggleRow
+                label="Wrap in card"
+                hint="Add a visible border around the widget"
+                checked={cardStyle.wrapInCard}
+                onChange={(next) => updateCardStyle({ wrapInCard: next })}
+              />
 
-              {/* Download button visibility */}
-              <div
-                className="wt-style-toggle"
-                onClick={() => {
-                  const next = !showExportButton;
-                  setShowExportButton(next);
-                  emit({ showExportButton: next });
-                }}
-                role="switch"
-                aria-checked={showExportButton}
-              >
-                <div className="wt-style-toggle__info">
-                  <span className="wt-style-toggle__label">Show download button</span>
-                  <span className="wt-style-toggle__hint">Display the download icon in the header</span>
-                </div>
-                <div className={`wt-style-switch${showExportButton ? ' wt-style-switch--on' : ''}`}>
-                  <div className="wt-style-switch__thumb" />
-                </div>
-              </div>
+              <ToggleRow
+                label="Show download button"
+                hint="Display the CSV download icon in the header"
+                checked={showExportButton}
+                onChange={(next) => { setShowExportButton(next); emit({ showExportButton: next }); }}
+              />
+
+              <ToggleRow
+                label="Show search"
+                hint="Search the table from its header and step through matches"
+                checked={showSearch}
+                onChange={(next) => { setShowSearch(next); emit({ showSearch: next }); }}
+              />
 
               {/* Background — always visible */}
-              <div className="wt-config__field">
-                <span className="wt-config__label BodySmallDefault">Background</span>
-                <Popover
-                  trigger={
-                    <button className="wt-style-color-btn">
-                      <span
-                        className="wt-style-color-swatch"
-                        style={{
-                          backgroundColor: cardStyle.bg || 'transparent',
-                          border: cardStyle.bg ? '1px solid rgba(0,0,0,0.12)' : '1px dashed #ccc',
-                        }}
-                      />
-                      <span className="wt-style-color-label">{cardStyle.bg || 'None'}</span>
-                    </button>
-                  }
-                  placement="Bottom Start"
-                >
-                  <PopoverBody>
-                    <ColorPicker
-                      selectedColor={cardStyle.bg || '#ffffff'}
-                      onColorSelect={(c) => updateCardStyle({ bg: c })}
-                    />
-                  </PopoverBody>
-                </Popover>
-              </div>
+              <ColorInput
+                label="Background"
+                value={cardStyle.bg || '#ffffff'}
+                onChange={(c: string) => updateCardStyle({ bg: c })}
+              />
 
               {cardStyle.wrapInCard && (
                 <>
                   {/* Border color */}
-                  <div className="wt-config__field">
-                    <span className="wt-config__label BodySmallDefault">Border color</span>
-                    <Popover
-                      trigger={
-                        <button className="wt-style-color-btn">
-                          <span
-                            className="wt-style-color-swatch"
-                            style={{
-                              backgroundColor: cardStyle.borderColor || '#e0e0e0',
-                              border: '1px solid rgba(0,0,0,0.12)',
-                            }}
-                          />
-                          <span className="wt-style-color-label">{cardStyle.borderColor || '#e0e0e0'}</span>
-                        </button>
-                      }
-                      placement="Bottom Start"
-                    >
-                      <PopoverBody>
-                        <ColorPicker
-                          selectedColor={cardStyle.borderColor || '#e0e0e0'}
-                          onColorSelect={(c) => updateCardStyle({ borderColor: c })}
-                        />
-                      </PopoverBody>
-                    </Popover>
-                  </div>
+                  <ColorInput
+                    label="Border color"
+                    value={cardStyle.borderColor || '#e0e0e0'}
+                    onChange={(c: string) => updateCardStyle({ borderColor: c })}
+                  />
 
                   {/* Border width */}
                   <div className="wt-config__field">
@@ -1094,31 +1207,11 @@ export function TableWidgetConfiguration(props: TableWidgetConfigurationProps) {
             <div className="wt-style-section__body">
 
               {/* Color */}
-              <div className="wt-config__field">
-                <span className="wt-config__label BodySmallDefault">Color</span>
-                <Popover
-                  trigger={
-                    <button className="wt-style-color-btn">
-                      <span
-                        className="wt-style-color-swatch"
-                        style={{
-                          backgroundColor: titleStyle.color || '#1a1a1a',
-                          border: '1px solid rgba(0,0,0,0.12)',
-                        }}
-                      />
-                      <span className="wt-style-color-label">{titleStyle.color || 'Default'}</span>
-                    </button>
-                  }
-                  placement="Bottom Start"
-                >
-                  <PopoverBody>
-                    <ColorPicker
-                      selectedColor={titleStyle.color || '#1a1a1a'}
-                      onColorSelect={(c) => updateTitleStyle({ color: c })}
-                    />
-                  </PopoverBody>
-                </Popover>
-              </div>
+              <ColorInput
+                label="Color"
+                value={titleStyle.color || '#1a1a1a'}
+                onChange={(c: string) => updateTitleStyle({ color: c })}
+              />
 
               {/* Font size */}
               <CounterInput
@@ -1131,6 +1224,27 @@ export function TableWidgetConfiguration(props: TableWidgetConfigurationProps) {
                   updateTitleStyle({ fontSize: value ?? 16 })
                 }
               />
+
+              {/* Alignment */}
+              <div className="wt-config__field">
+                <span className="wt-config__label BodySmallDefault">Alignment</span>
+                <div className="wt-seg-group">
+                  {([
+                    { value: 'left',   label: 'Left',   icon: <AlignLeft   size={12} /> },
+                    { value: 'center', label: 'Center', icon: <AlignCenter size={12} /> },
+                    { value: 'right',  label: 'Right',  icon: <AlignRight  size={12} /> },
+                  ] as { value: TitleAlign; label: string; icon: React.ReactNode }[]).map(({ value, label, icon }) => (
+                    <button
+                      key={value}
+                      className={`wt-seg-btn${titleStyle.align === value ? ' wt-seg-btn--active' : ''}`}
+                      title={label}
+                      onClick={() => updateTitleStyle({ align: value })}
+                    >
+                      <span className="wt-series-item__seg-content">{icon}{label}</span>
+                    </button>
+                  ))}
+                </div>
+              </div>
 
               {/* Font weight */}
               <div className="wt-config__field">
@@ -1185,50 +1299,26 @@ export function TableWidgetConfiguration(props: TableWidgetConfigurationProps) {
             ))}
           </div>
 
-          <div
-            className="wt-style-toggle"
-            onClick={() => updateRowFilter({ enableCount: !rowFilter.enableCount })}
-            role="switch"
-            aria-checked={rowFilter.enableCount}
-          >
-            <div className="wt-style-toggle__info">
-              <span className="wt-style-toggle__label">Show instance count</span>
-              <span className="wt-style-toggle__hint">Display the number of matching rows next to each filter</span>
-            </div>
-            <div className={`wt-style-switch${rowFilter.enableCount ? ' wt-style-switch--on' : ''}`}>
-              <div className="wt-style-switch__thumb" />
-            </div>
-          </div>
+          <ToggleRow
+            label="Show instance count"
+            hint="Display the number of matching rows next to each filter"
+            checked={rowFilter.enableCount}
+            onChange={(next) => updateRowFilter({ enableCount: next })}
+          />
 
-          <div
-            className="wt-style-toggle"
-            onClick={() => updateRowFilter({ hideNonMatching: !rowFilter.hideNonMatching })}
-            role="switch"
-            aria-checked={rowFilter.hideNonMatching}
-          >
-            <div className="wt-style-toggle__info">
-              <span className="wt-style-toggle__label">Hide non-matching rows</span>
-              <span className="wt-style-toggle__hint">Rows that don't match any filter are hidden. All filters are shown by default — deselect a chip to hide that category too</span>
-            </div>
-            <div className={`wt-style-switch${rowFilter.hideNonMatching ? ' wt-style-switch--on' : ''}`}>
-              <div className="wt-style-switch__thumb" />
-            </div>
-          </div>
+          <ToggleRow
+            label="Hide non-matching rows"
+            hint="Rows that don't match any filter are hidden. All filters are shown by default — deselect a chip to hide that category too"
+            checked={rowFilter.hideNonMatching}
+            onChange={(next) => updateRowFilter({ hideNonMatching: next })}
+          />
 
-          <div
-            className="wt-style-toggle"
-            onClick={() => updateRowFilter({ enableColor: !rowFilter.enableColor })}
-            role="switch"
-            aria-checked={rowFilter.enableColor}
-          >
-            <div className="wt-style-toggle__info">
-              <span className="wt-style-toggle__label">Highlight matching rows (optional)</span>
-              <span className="wt-style-toggle__hint">Tint a row with the active filter's color — can be used with or without hiding</span>
-            </div>
-            <div className={`wt-style-switch${rowFilter.enableColor ? ' wt-style-switch--on' : ''}`}>
-              <div className="wt-style-switch__thumb" />
-            </div>
-          </div>
+          <ToggleRow
+            label="Highlight matching rows (optional)"
+            hint="Tint a row with the active filter's color — can be used with or without hiding"
+            checked={rowFilter.enableColor}
+            onChange={(next) => updateRowFilter({ enableColor: next })}
+          />
 
           {/* ── Filters list ── */}
           <div className="wt-cf-section-head">
@@ -1269,7 +1359,6 @@ export function TableWidgetConfiguration(props: TableWidgetConfigurationProps) {
       {/* ── Add/Edit Filter modal (Configurator Overlay Pattern) ── */}
       {isFilterModalOpen && (
         <Modal
-          {...({ transparent: true } as any)}
           isOpen={isFilterModalOpen}
           positionX={filterModalX}
           positionY={filterModalY}
@@ -1302,28 +1391,11 @@ export function TableWidgetConfiguration(props: TableWidgetConfigurationProps) {
               />
               {filterNameError && <p className="wt-config__hint wt-rowfilter-error">{filterNameError}</p>}
 
-              <div className="wt-config__field">
-                <span className="wt-config__label BodySmallDefault">Color</span>
-                <Popover
-                  trigger={
-                    <button className="wt-style-color-btn">
-                      <span
-                        className="wt-style-color-swatch"
-                        style={{ backgroundColor: filterColorInput, border: '1px solid rgba(0,0,0,0.12)' }}
-                      />
-                      <span className="wt-style-color-label">{filterColorInput}</span>
-                    </button>
-                  }
-                  placement="Bottom Start"
-                >
-                  <PopoverBody>
-                    <ColorPicker
-                      selectedColor={filterColorInput}
-                      onColorSelect={(color) => setFilterColorInput(color)}
-                    />
-                  </PopoverBody>
-                </Popover>
-              </div>
+              <ColorInput
+                label="Color"
+                value={filterColorInput}
+                onChange={(color: string) => setFilterColorInput(color)}
+              />
 
               <div className="wt-rowfilter-icon-field">
                 <span className="wt-config__label BodySmallDefault">Icon</span>

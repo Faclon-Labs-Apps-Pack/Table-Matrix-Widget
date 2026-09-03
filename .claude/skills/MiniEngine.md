@@ -67,6 +67,66 @@ Response shape:
 
 Map `json.data[]` → `DataEntry[]` directly: `{ key: item.key, value: item.value }`.
 
+### Series bindings — `type: "series"`
+
+A binding that must return a **time-series** (many values across the window, not one
+aggregated value) has to be sent with `type: "series"` in its `config[]` entry. Without it
+the endpoint honours the topic's aggregation postfix (`:last`, `:avg`, …) and collapses the
+whole window to a single value.
+
+```jsonc
+{
+  "graph": "iosense_test_uns",
+  "timeFrame": "hour",              // bucket size — decides how many slots come back
+  "timezone": "Asia/Kolkata",
+  "config": [
+    { "key": "R0C0", "topic": "uns:ws_abc://plant1/voltage:last" },                     // single value
+    { "key": "series:R0C1", "topic": "uns:ws_abc://plant1/voltage:last", "type": "series" }  // slots
+  ],
+  "startTime": 1782844200000,
+  "endTime":   1782930600000
+}
+```
+
+Series rows come back **slots-based** — they carry no `value`:
+
+```jsonc
+{
+  "key": "series:R0C1",
+  "path": "voltage",
+  "meta": { "type": "device", "unit": "V", "aggregation": { "operator": "lastDP", "resolution": "hour" } },
+  "range": { "from": 1782844200000, "to": 1782930600000 },
+  "slots": [
+    { "from": 1782844200000, "to": 1782847800000, "label": "00:00", "value": 1.9342, "quality": "good" },
+    { "from": 1782847800000, "to": 1782851400000, "label": "01:00", "value": 1.9599, "quality": "good" }
+  ]
+}
+```
+
+Mini-engine mapping for a series row: `value = slots.map(s => s.value)` (the array the widget
+spreads), with `slots` carried on the `DataEntry` so labels/timestamps stay available.
+`value: null` on a slot means `quality: "no_data"`.
+
+A row may also come back as `{ key, error }` or `{ key, skipped: true, reason }` — log and
+drop those rows rather than emitting a `DataEntry` with an undefined value.
+
+Because the engine needs to know *which* bindings are series, `type` is carried on the
+`dynamicBindingPathList` entry itself (`{ key, topic, type?: 'series' }`) — the configurator
+tags it at save time, and the engine passes it straight through to `config[]`.
+
+**`timezone` comes from the widget, not only the envelope.** `uiConfig.timeDisplay`
+(`'local' | 'utc'`) is the operator-facing switch and wins over `timeConfig.timezone`:
+`'utc'` sends `"UTC"` so the table reads identically for every viewer, `'local'` sends the
+browser's resolved zone. Only when the widget has no opinion does `timeConfig.timezone`
+apply. Bucket labels come back cut against whichever zone was sent, so this decides what
+the operator sees in a series column.
+
+**How many cells a series actually fills.** `timeFrame` × window decides the slot count;
+the widget then writes from the base cell in the configured direction until the smaller of
+`seriesBinding.limit` (0 = uncapped) and the grid edge. 24 hourly buckets into a 10-row
+table fills 9 cells and drops the rest — the widget logs the shortfall and the configurator
+shows the exact span (`Fills A2:A10 — up to 9 buckets`) before the user saves.
+
 Constants (defined in `api.ts`):
 - `GRAPH = 'iosense_test_uns'` — hardcoded per env
 - `STAGING_BASE = 'https://stagingsv.iosense.io/api'`
@@ -222,6 +282,7 @@ Widget reads all bindable values via `getValue()` — never directly from `confi
 - The `key` in every `DataEntry` must exactly match the `key` in `dynamicBindingPathList`
 - There is **no** per-apiConfig fetch loop — one `resolveAndCompute` call covers all bindings
 - `item.value` is the resolved field from the response — NOT `item.data`
+- Time-series bindings MUST be sent with `type: 'series'`; their result is `slots`, not `value`
 - `timeTabConfig` in the envelope is for UI re-hydration only — mini-engine reads `timeConfig`, never `timeTabConfig`
 
 ---

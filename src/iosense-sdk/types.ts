@@ -10,6 +10,37 @@ export type DataValue =
 export interface DataEntry {
   key: string;
   value: DataValue;
+  /** Bucketed time-series slots, present only for `type: 'series'` bindings.
+   *  `value` carries the same buckets flattened to their values, which is what
+   *  the widget spreads across cells; `slots` keeps the labels/timestamps for
+   *  anything that needs the time axis. */
+  slots?: ResolveSlot[];
+}
+
+// One bucket of a series result, as returned by resolveAndCompute when the
+// request's config entry carries `type: 'series'`.
+export interface ResolveSlot {
+  from: number;                    // bucket start, epoch ms
+  to: number;                      // bucket end, epoch ms
+  label: string;                   // bucket label, e.g. "00:00"
+  value: number | null;            // null when quality is 'no_data'
+  quality?: 'good' | 'no_data';
+  isPartial?: boolean;
+  shift?: string;
+}
+
+// resolveAndCompute request `type`. Omitted → the topic's aggregation postfix
+// (`:last`, `:avg`, …) collapses the window to one value. `'series'` → the
+// window is bucketed and returned as `slots`.
+export type BindingType = 'series';
+
+// One entry of dynamicBindingPathList. `type` is carried through to the
+// resolveAndCompute request so the host engine (and the dev mini-engine) know
+// which bindings must come back bucketed rather than as a single value.
+export interface BindingPath {
+  key: string;
+  topic: string;
+  type?: BindingType;
 }
 
 export interface Duration {
@@ -32,10 +63,13 @@ export interface TimeConfig {
 export type WidgetEvent =
   | { type: 'TIME_CHANGE'; payload: { startTime: string; endTime: string; periodicity: string } }
   | { type: 'FILTER_CHANGE'; payload: Record<string, unknown> }
-  // Emitted when the user edits a cell binding directly on the widget canvas.
-  // The widget stays a pure renderer — it hands the updated uiConfig to the host,
-  // which rebuilds dynamicBindingPathList and persists the envelope.
-  | { type: 'CONFIG_CHANGE'; payload: { uiConfig: TableWidgetUIConfig } };
+  // Emitted when the user edits the widget directly on the canvas (bindings,
+  // cell content/formats, grid geometry). The widget stays a pure renderer —
+  // it hands the updated uiConfig to the host, which persists the envelope.
+  // dynamicBindingPathList is rebuilt BY THE WIDGET and carried in the payload
+  // so the "binding index always matches uiConfig" invariant holds even for
+  // hosts that just persist the payload verbatim.
+  | { type: 'CONFIG_CHANGE'; payload: { uiConfig: TableWidgetUIConfig; dynamicBindingPathList: BindingPath[] } };
 
 export type TextAlign = 'left' | 'center' | 'right';
 export type NumberFormat = 'general' | 'number' | 'percent' | 'currency' | 'integer';
@@ -67,11 +101,23 @@ export interface CellFormat {
   textColor: string;          // CSS hex or '' (inherits)
   cellColor: string;          // CSS hex or '' (transparent)
   borders: CellBorders;
+  link: string;               // URL opened on click; '' = no link
+  /** Decimal places for this cell's numeric value. null = inherit the widget's
+   *  `dataPrecision`; a number overrides it (0-10). */
+  decimals: number | null;
 }
 
 export interface CellData {
   value: string;
   format: CellFormat;
+}
+
+// One persisted cell in uiConfig.cells. Sparse: a key is present only when the
+// cell carries manual text and/or a non-default format. Values of bound cells
+// are runtime data (service-populated) and are never persisted here.
+export interface PersistedCell {
+  value?: string;
+  format?: CellFormat;
 }
 
 export type ConditionalRuleCondition =
@@ -150,12 +196,19 @@ export interface TableWidgetCardStyle {
 }
 
 export type TitleFontWeight = 'regular' | 'medium' | 'bold';
+export type TitleAlign = 'left' | 'center' | 'right';
 
 export interface TableWidgetTitleStyle {
   color: string;
   fontSize: number;
   fontWeight: TitleFontWeight;
+  align: TitleAlign;
 }
+
+/** Clock used for the resolve window and for the time labels a series carries.
+ *  'local' = the viewer's browser timezone, 'utc' = UTC (the platform's
+ *  "global" time), so the same table reads identically for every operator. */
+export type TimeDisplayMode = 'local' | 'utc';
 
 export interface TableWidgetUIConfig {
   title: string;
@@ -170,11 +223,28 @@ export interface TableWidgetUIConfig {
   cellBindings: CellBinding[];
   seriesBindings: SeriesBinding[];
   rowFilter: RowFilterConfig;
+  /** Default decimal places for numeric values that carry no per-cell override.
+   *  null = render the value exactly as it resolved. */
+  dataPrecision: number | null;
+  /** Whether time-bucketed (series) data is labelled in the viewer's local
+   *  timezone or in UTC. Also drives the mini-engine's resolve request. */
+  timeDisplay: TimeDisplayMode;
+  /** Persisted manual cell content + per-cell formatting, keyed "R{r}C{c}".
+   *  Hydrated into the CellDataStore on mount and re-emitted (via CONFIG_CHANGE)
+   *  whenever the user edits or formats cells on the canvas. */
+  cells: Record<string, PersistedCell>;
+  /** Per-column widths in px, index = column. Missing entries fall back to the
+   *  default width; [] = all defaults. */
+  columnWidths: number[];
+  /** Per-row heights in px, index = row. Same fallback rules as columnWidths. */
+  rowHeights: number[];
   style: {
     card: TableWidgetCardStyle;
     title: TableWidgetTitleStyle;
     tableBorderStyle: TableBorderStyle;
     showExportButton: boolean;
+    /** Show the in-table search field in the widget header. */
+    showSearch: boolean;
   };
 }
 
@@ -184,5 +254,5 @@ export interface TableWidgetEnvelope {
   general: { title: string };
   timeConfig?: TimeConfig;
   uiConfig: TableWidgetUIConfig;
-  dynamicBindingPathList: Array<{ key: string; topic: string }>;
+  dynamicBindingPathList: BindingPath[];
 }

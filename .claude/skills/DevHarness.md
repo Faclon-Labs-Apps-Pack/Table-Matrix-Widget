@@ -45,38 +45,67 @@ useEffect(() => {
 
 ## UNS Injection Props (Angular Production vs Dev Harness)
 
-The configurator supports two UNS prop injection modes. The harness switches automatically based on whether all three functional props are present:
+The UNS topic field is **`UNSTreePicker`** (design-sdk 0.7.16+), imported from the
+barrel; node types and the topic helpers come from the subpath:
 
-```typescript
-const hasInjectedUNS =
-  props.unsTree !== undefined &&
-  props.onLoadWorkspaces !== undefined &&
-  props.resolveUNSValue !== undefined;
-
-// All three present → use Angular-injected props
-// Any missing → fall back to useUNSTree hook (dev harness path)
+```ts
+import { UNSTreePicker } from '@faclon-labs/design-sdk';
+import type { UNSNode, UNSWorkspace } from '@faclon-labs/design-sdk/UNSTreePicker';
 ```
 
-**Dev harness (App.tsx):** pass only `authentication`. The hook fetches workspaces and resolves topics automatically.
+It commits `{{uns:<wsId>://<path>}}` itself — **there is no resolve step.** That was
+the old `UNSPathInput` flow, which needed a whole tree up front that no endpoint
+produces, which is why it always came up empty.
 
-**Angular production:** inject all three:
-```typescript
-{
-  unsTree: this.unsService.tree,
-  isLoadingTree: this.unsService.loading,
-  onLoadWorkspaces: async () => {
-    await this.unsService.loadWorkspaces(token);
-    // Also fetch nodes to populate this.meta before user selects:
-    for (const [wsName, wsId] of Object.entries(this.unsService.workspaceMap)) {
-      await this.unsService.loadWorkspaceNodes(wsName, wsId, token);
-    }
-    this.getApi()?.update('widget-config', this.buildProps());
-  },
-  resolveUNSValue: (raw: string) => this.unsService.resolve(raw),
-}
+Gate injected-vs-hook on the **pair** of props, and feed the hook `undefined` when
+the host injects, so the fallback does not fire a redundant round trip:
+
+```ts
+const hasInjectedUNS = unsWorkspaces !== undefined && loadUnsChildren !== undefined;
+const hook = useUNSTreePicker(hasInjectedUNS ? undefined : authentication);
 ```
 
-See **UNSPathInput.md** for the full Angular injection contract and `this.meta` population rules.
+Props to declare on the configurator (these exact names — the host injects them):
+
+```ts
+unsWorkspaces?: UNSWorkspace[];
+isLoadingWorkspaces?: boolean;
+loadUnsChildren?: (wsId: string, parentId?: string) => Promise<UNSNode[]>;
+searchUnsNodes?: (wsId: string, query: string, limit?: number) => Promise<UNSNode[]>;
+```
+
+**Dev harness (App.tsx):** pass only `authentication`; `useUNSTreePicker` fetches.
+
+### Reshaping the flat node list
+
+`nodes?graph=uns:<wsId>&expandPostfix=true` returns a flat list: Tags plus
+`virtualProperty` rows pathed `<tagPath>:<op>`. **The aggregation suffix is
+mandatory** — a topic without one resolves to nothing, so the `:op` variants, not
+the bare Tags, must be the selectable leaves:
+
+- Tag **with** variants → `type: 'Folder'`, `hasChildren: true`, `childCount = n`;
+  its `:op` variants become the `Tag` leaves beneath it.
+- Tag **without** variants → `type: 'Tag'`, `hasChildren: false`.
+
+`type` and `hasChildren` must agree. Search runs client-side over the leaves only.
+
+### Two endpoint traps
+
+> **`/uns/workspaces` does not exist** — it 404s. Workspaces come from
+> `nodes?graph=uns:_workspaces` filtered to `type === 'Workspace'`. The failure is a
+> rejected fetch, not an empty list, so the symptom is a picker with no workspaces
+> and no error.
+
+> **The response is double-nested:** `{ data: { data: [...] } }`. Read it as
+> `body?.data?.data ?? body?.data ?? []`.
+
+### Portals
+
+The dropdown portals to `document.body`, outside the container `index.ts` stamps.
+Host panels that close on outside click will close the moment an option is clicked.
+`iosense-sdk/zoneIgnorePortals.ts` runs a refcounted `MutationObserver` that stamps
+`data-zone-ignore` on `.fds-uns-tree-picker__popover` and friends as they mount;
+call `useZoneIgnorePortals()` from any component rendering a picker.
 
 ---
 

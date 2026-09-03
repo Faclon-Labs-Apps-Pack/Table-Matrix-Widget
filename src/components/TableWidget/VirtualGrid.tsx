@@ -1,10 +1,10 @@
 import { useState, useEffect, useRef } from 'react';
 import { useVirtualizer } from '@tanstack/react-virtual';
-import { Button, Popover, PopoverHeader, PopoverBody, ColorPicker } from '@faclon-labs/design-sdk';
-import { Bold, Italic, Underline, AlignLeft, AlignCenter, AlignRight, Grid, Droplet, Type } from 'react-feather';
-import { CellDataStore, CellId } from './CellDataStore';
-import { BoundInfo } from './bindingMap';
-import { getDisplayValue, applyNumberFormat, evaluateConditionalRules } from './formulaEngine';
+import { Button, Popover, PopoverHeader, PopoverBody, ColorInput, TextInput } from '@faclon-labs/design-sdk';
+import { Bold, Italic, Underline, AlignLeft, AlignCenter, AlignRight, Grid, Droplet, Type, Link as LinkIcon, Hash, Settings, XSquare } from 'react-feather';
+import { CellDataStore, CellId, makeDefaultFormat } from './CellDataStore';
+import { BoundInfo, GridMutation } from './bindingMap';
+import { getDisplayValue, getComputedValue, evaluateConditionalRules } from './formulaEngine';
 import { CellFormat, CellBorders, CellBorderSide, BorderStyle, BorderWidth, TextAlign, NumberFormat, ConditionalRule, TableBorderStyle } from '../../iosense-sdk/types';
 import './VirtualGrid.css';
 
@@ -14,11 +14,26 @@ const COL_WIDTH = 100;
 const MIN_COL_WIDTH = 30;
 const MIN_ROW_HEIGHT = 18;
 
+// Snapshot of the grid state the user can change on the canvas — reported to
+// the host via onUserChange so it can be persisted into uiConfig.
+export interface GridGeometry {
+  rows: number;
+  columns: number;
+  freezeRows: number;
+  freezeColumns: number;
+  columnWidths: number[];
+  rowHeights: number[];
+}
+
 interface VirtualGridProps {
   rows: number;
   columns: number;
   freezeRows: number;
   freezeColumns: number;
+  /** Persisted per-column widths / per-row heights (px). Missing entries fall
+   *  back to the default size. */
+  configColWidths?: number[];
+  configRowHeights?: number[];
   store: CellDataStore;
   conditionalRules: ConditionalRule[];
   locked?: boolean;
@@ -28,6 +43,19 @@ interface VirtualGridProps {
   boundCells?: Map<CellId, BoundInfo>;
   /** Cells a series will fill, highlighted while its config popover is open. */
   previewCells?: Set<CellId>;
+  /** Default decimal places for SERVICE-POPULATED cells that carry no per-cell
+   *  override. null = render the resolved number untouched. Manually typed
+   *  content is never rounded by this — "10" typed by hand must not become
+   *  "10.00" because a data topic elsewhere wanted 2 decimals. */
+  dataPrecision?: number | null;
+  /** Whether a cell's value came from the data prop (a binding or a series
+   *  spill). Called at render time so it stays correct as data arrives without
+   *  needing the parent to re-render. */
+  isDataCell?: (cellId: CellId) => boolean;
+  /** Cells matching the active in-table search, and the one the operator has
+   *  stepped to — highlighted, and scrolled into view when it changes. */
+  searchMatches?: Set<CellId>;
+  activeMatch?: CellId | null;
   /** Double-clicking a cell calls this (with its viewport rect) instead of
    *  entering text-edit mode — the host opens the Cell Config popover. */
   onCellConfigure?: (cellId: CellId, rect: DOMRect) => void;
@@ -36,11 +64,20 @@ interface VirtualGridProps {
   /** Rows the active row filter selection tints — takes priority over
    *  conditional formatting and the cell's own background color. */
   rowColors?: Map<number, string>;
+  /** Fires after any user-initiated grid mutation (cell edit, formatting,
+   *  resize, insert/delete, freeze) with the current geometry so the host can
+   *  serialize the store + geometry into the envelope. Insert/delete row/col
+   *  additionally passes the structural mutation so the host can remap
+   *  position-addressed config (bindings, rule ranges, the row-filter range)
+   *  in the same emit. Data-driven store writes (the data prop) never fire
+   *  this. */
+  onUserChange?: (geo: GridGeometry, mutation?: GridMutation) => void;
 }
 
 interface ContextMenuState {
-  type: 'col' | 'row';
-  index: number;
+  type: 'col' | 'row' | 'cell';
+  index: number;      // row/column index; for 'cell' it is the row
+  col?: number;       // only for 'cell'
   x: number;
   y: number;
 }
@@ -185,21 +222,34 @@ function cellBorderInlineStyle(borders: CellBorders): React.CSSProperties {
   return result;
 }
 
-export function VirtualGrid({ rows, columns, freezeRows, freezeColumns, store, conditionalRules, locked = false, tableBorderStyle = 'all', boundCells, previewCells, onCellConfigure, hiddenRows, rowColors }: VirtualGridProps) {
+export function VirtualGrid({ rows, columns, freezeRows, freezeColumns, configColWidths, configRowHeights, store, conditionalRules, locked = false, tableBorderStyle = 'all', boundCells, previewCells, dataPrecision = null, isDataCell, searchMatches, activeMatch, onCellConfigure, hiddenRows, rowColors, onUserChange }: VirtualGridProps) {
   // Bound cells are service-populated — never manually editable.
   const isBound = (cellId: CellId) => boundCells?.has(cellId) ?? false;
-  // Keep a live ref for the document-level paste listener (stale-closure guard).
+  // Effective precision for one cell: the widget default applies only to
+  // service-populated values; a per-cell override (set from the toolbar) wins
+  // over both and is handled inside getDisplayValue.
+  const decimalsFor = (cellId: CellId): number | null =>
+    (isDataCell?.(cellId) ?? isBound(cellId)) ? dataPrecision : null;
+  // Live refs for the document-level copy/paste listeners (registered once with
+  // [store] deps) — without them the handlers keep mount-time values forever,
+  // e.g. paste staying dead after the widget is unlocked.
   const boundCellsRef = useRef(boundCells);
   boundCellsRef.current = boundCells;
+  const lockedRef = useRef(locked);
+  lockedRef.current = locked;
   // ── Selection ──────────────────────────────────────────────────────────────
   const [selectedCells, setSelectedCells] = useState<Set<CellId>>(new Set());
   const [tick, setTick] = useState(0);
   const selectedCellsRef = useRef<Set<CellId>>(new Set());
   useEffect(() => { selectedCellsRef.current = selectedCells; }, [selectedCells]);
 
-  // ── Resize state ───────────────────────────────────────────────────────────
-  const [colWidths, setColWidths] = useState<number[]>(() => Array(columns).fill(COL_WIDTH));
-  const [rowHeights, setRowHeights] = useState<number[]>(() => Array(rows).fill(ROW_HEIGHT));
+  // ── Resize state — seeded from persisted widths/heights when present ──────
+  const [colWidths, setColWidths] = useState<number[]>(() =>
+    Array.from({ length: columns }, (_, i) => configColWidths?.[i] ?? COL_WIDTH),
+  );
+  const [rowHeights, setRowHeights] = useState<number[]>(() =>
+    Array.from({ length: rows }, (_, i) => configRowHeights?.[i] ?? ROW_HEIGHT),
+  );
   const resizingRef = useRef<{
     type: 'col' | 'row'; index: number; startPos: number; startSize: number;
   } | null>(null);
@@ -215,6 +265,28 @@ export function VirtualGrid({ rows, columns, freezeRows, freezeColumns, store, c
   // ── Local freeze ──────────────────────────────────────────────────────────
   const [localFR, setLocalFR] = useState(freezeRows);
   const [localFC, setLocalFC] = useState(freezeColumns);
+
+  // ── User-change reporting ─────────────────────────────────────────────────
+  // Live refs (assigned every render) so document-level listeners with []
+  // dependencies read current state; overrides cover values set in the same
+  // tick where the state hasn't re-rendered yet.
+  const colWidthsRef = useRef(colWidths);   colWidthsRef.current = colWidths;
+  const rowHeightsRef = useRef(rowHeights); rowHeightsRef.current = rowHeights;
+  const localFRRef = useRef(localFR);       localFRRef.current = localFR;
+  const localFCRef = useRef(localFC);       localFCRef.current = localFC;
+  const onUserChangeRef = useRef(onUserChange); onUserChangeRef.current = onUserChange;
+
+  function emitUserChange(overrides?: Partial<GridGeometry>, mutation?: GridMutation) {
+    onUserChangeRef.current?.({
+      rows: localRowsRef.current,
+      columns: localColsRef.current,
+      freezeRows: localFRRef.current,
+      freezeColumns: localFCRef.current,
+      columnWidths: colWidthsRef.current,
+      rowHeights: rowHeightsRef.current,
+      ...overrides,
+    }, mutation);
+  }
 
   // ── Border panel ──────────────────────────────────────────────────────────
   const [borderConfig, setBorderConfig] = useState<{
@@ -258,6 +330,26 @@ export function VirtualGrid({ rows, columns, freezeRows, freezeColumns, store, c
     setLocalFC(freezeColumns);
   }, [columns, freezeColumns]);
 
+  // Persisted sizes can arrive AFTER mount — a host may mount with a partial
+  // config and hand the saved envelope in a later update. Re-apply them then;
+  // the JSON guard keeps our own emit round-trips (equal values, fresh array
+  // identity) from causing render churn or clobbering an in-progress resize.
+  useEffect(() => {
+    if (!configColWidths || configColWidths.length === 0) return;
+    setColWidths((prev) => {
+      const next = prev.map((w, i) => configColWidths[i] ?? w);
+      return JSON.stringify(next) === JSON.stringify(prev) ? prev : next;
+    });
+  }, [configColWidths]);
+
+  useEffect(() => {
+    if (!configRowHeights || configRowHeights.length === 0) return;
+    setRowHeights((prev) => {
+      const next = prev.map((h, i) => configRowHeights[i] ?? h);
+      return JSON.stringify(next) === JSON.stringify(prev) ? prev : next;
+    });
+  }, [configRowHeights]);
+
   // Clear selection immediately when locked so no cell stays highlighted
   useEffect(() => {
     if (locked) setSelectedCells(new Set());
@@ -267,21 +359,93 @@ export function VirtualGrid({ rows, columns, freezeRows, freezeColumns, store, c
   useEffect(() => store.subscribe(() => setTick((t) => t + 1)), [store]);
   void tick;
 
+  // Stepping through search results must bring the match on screen — with
+  // virtualization an off-screen match isn't even rendered, so highlighting
+  // alone would look like the search found nothing.
+  const scrollToRef = useRef<((r: number, c: number) => void) | null>(null);
+  useEffect(() => {
+    if (!activeMatch) return;
+    const m = /^R(\d+)C(\d+)$/.exec(activeMatch);
+    if (m) scrollToRef.current?.(parseInt(m[1], 10), parseInt(m[2], 10));
+  }, [activeMatch]);
+
+  // ── Fit-to-bounds (locked mode) ───────────────────────────────────────────
+  // A locked table is a finished read-only surface: it must fill its widget box
+  // exactly, with no strip of background showing past the last row/column and
+  // no scrollbars. Measuring the wrapper and scaling every track by one factor
+  // per axis keeps the operator's relative column proportions intact.
+  const [viewport, setViewport] = useState<{ w: number; h: number } | null>(null);
+  useEffect(() => {
+    const el = gridWrapRef.current;
+    if (!el || typeof ResizeObserver === 'undefined') return;
+    const ro = new ResizeObserver(([entry]) => {
+      const box = entry.contentRect;
+      setViewport((prev) =>
+        prev && Math.abs(prev.w - box.width) < 0.5 && Math.abs(prev.h - box.height) < 0.5
+          ? prev
+          : { w: box.width, h: box.height },
+      );
+    });
+    ro.observe(el);
+    return () => ro.disconnect();
+  }, []);
+
+  // Scale `sizes` so they sum to `target`, distributing the rounding remainder
+  // into the last track — a per-track round alone leaves a 1-2px seam.
+  function fitSizes(sizes: number[], target: number): number[] {
+    const total = sizes.reduce((a, b) => a + b, 0);
+    if (total <= 0 || target <= 0) return sizes;
+    const k = target / total;
+    const scaled = sizes.map((s) => Math.max(0, Math.floor(s * k)));
+    const used = scaled.reduce((a, b) => a + b, 0);
+    // Grow the last visible (non-collapsed) track by whatever pixel remains.
+    for (let i = scaled.length - 1; i >= 0; i--) {
+      if (sizes[i] > 0) { scaled[i] += target - used; break; }
+    }
+    return scaled;
+  }
+
   // ── TanStack Virtual ──────────────────────────────────────────────────────
+  // Row-filter-hidden rows collapse to 0px tracks in the grid template, so the
+  // virtualizer MUST estimate them at 0 too — otherwise its offsets place the
+  // rows after a hidden block kilometers below the collapsed layout and they
+  // never render even though they're on screen. rowHeights itself stays
+  // untouched (it's the persisted/user-set size, restored when unhidden).
+  const naturalRowHeights = rowHeights
+    .slice(0, localRows)
+    .map((h, i) => (hiddenRows?.has(i) ? 0 : h));
+  const naturalColWidths = colWidths.slice(0, localCols);
+
+  const fitToBounds = locked && viewport !== null && viewport.w > 0 && viewport.h > 0;
+  const effectiveRowHeights = fitToBounds ? fitSizes(naturalRowHeights, viewport.h) : naturalRowHeights;
+  const layoutColWidths     = fitToBounds ? fitSizes(naturalColWidths,  viewport.w) : naturalColWidths;
+
   const rowVirt = useVirtualizer({
     count: localRows,
     getScrollElement: () => gridWrapRef.current,
-    estimateSize: (i) => rowHeights[i] ?? ROW_HEIGHT,
+    estimateSize: (i) => effectiveRowHeights[i] ?? ROW_HEIGHT,
     overscan: 5,
   });
 
   const colVirt = useVirtualizer({
     count: localCols,
     getScrollElement: () => gridWrapRef.current,
-    estimateSize: (i) => colWidths[i] ?? COL_WIDTH,
+    estimateSize: (i) => layoutColWidths[i] ?? COL_WIDTH,
     overscan: 3,
     horizontal: true,
   });
+
+  // The virtualizers cache estimateSize results — invalidate them whenever a
+  // resize or hide/show changes the real track sizes.
+  const rowSizesKey = effectiveRowHeights.join(',');
+  const colSizesKey = layoutColWidths.join(',');
+  useEffect(() => { rowVirt.measure(); }, [rowSizesKey]); // eslint-disable-line react-hooks/exhaustive-deps
+  useEffect(() => { colVirt.measure(); }, [colSizesKey]); // eslint-disable-line react-hooks/exhaustive-deps
+
+  scrollToRef.current = (r: number, c: number) => {
+    rowVirt.scrollToIndex(r, { align: 'auto' });
+    colVirt.scrollToIndex(c, { align: 'auto' });
+  };
 
   // ── Drag resize ───────────────────────────────────────────────────────────
   useEffect(() => {
@@ -297,9 +461,11 @@ export function VirtualGrid({ rows, columns, freezeRows, freezeColumns, store, c
       }
     }
     function onMouseUp() {
+      const wasResizing = resizingRef.current !== null;
       resizingRef.current = null;
       document.body.style.cursor = '';
       document.body.style.userSelect = '';
+      if (wasResizing) emitUserChange();
     }
     document.addEventListener('mousemove', onMouseMove);
     document.addEventListener('mouseup', onMouseUp);
@@ -325,14 +491,24 @@ export function VirtualGrid({ rows, columns, freezeRows, freezeColumns, store, c
         const cols: string[] = [];
         for (let c = minC; c <= maxC; c++) {
           const id: CellId = `R${r}C${c}`;
-          cols.push(cells.has(id) ? getDisplayValue(id, store) : '');
+          cols.push(cells.has(id) ? getDisplayValue(id, store, decimalsFor(id)) : '');
         }
         lines.push(cols.join('\t'));
       }
       return lines.join('\n');
     }
 
+    // The grid only owns copy/paste while focus is actually inside it — the
+    // wrapper (selection mode) or a cell (edit mode). Without this check the
+    // document-level listeners hijack clipboard events aimed at any other
+    // field on the page (configurator inputs, the topic popover) whenever a
+    // grid selection happens to exist.
+    function focusInsideGrid(): boolean {
+      return gridWrapRef.current?.contains(document.activeElement) ?? false;
+    }
+
     function onCopy(e: ClipboardEvent) {
+      if (!focusInsideGrid()) return;
       const sel = selectedCellsRef.current;
       if (sel.size === 0) return;
       if (window.getSelection()?.toString()) return;
@@ -341,7 +517,8 @@ export function VirtualGrid({ rows, columns, freezeRows, freezeColumns, store, c
     }
 
     function onPaste(e: ClipboardEvent) {
-      if (locked) return;
+      if (lockedRef.current) return;
+      if (!focusInsideGrid()) return;
       if ((document.activeElement as HTMLElement | null)?.classList?.contains('vg-data-cell')) return;
       const sel = selectedCellsRef.current;
       if (sel.size === 0) return;
@@ -357,15 +534,23 @@ export function VirtualGrid({ rows, columns, freezeRows, freezeColumns, store, c
       });
       const anchorR = Math.min(...coords.map((x) => x.r));
       const anchorC = Math.min(...coords.map((x) => x.c));
+      // One setValues batch → one listener fan-out for the whole block, however
+      // large the pasted region is.
+      const entries: Array<{ cellId: CellId; value: string }> = [];
       pasteRows.forEach((pasteRow, ri) => {
         pasteRow.forEach((value, ci) => {
           const r = anchorR + ri;
           const c = anchorC + ci;
           const target = `R${r}C${c}` as CellId;
-          if (r < localRowsRef.current && c < localColsRef.current && !boundCellsRef.current?.has(target))
-            store.setValue(target, value);
+          if (r < localRowsRef.current && c < localColsRef.current && !boundCellsRef.current?.has(target)) {
+            entries.push({ cellId: target, value });
+          }
         });
       });
+      if (entries.length > 0) {
+        store.setValues(entries);
+        emitUserChange();
+      }
     }
 
     document.addEventListener('copy', onCopy);
@@ -450,14 +635,18 @@ export function VirtualGrid({ rows, columns, freezeRows, freezeColumns, store, c
       const prev = editingCellRef.current;
       const editingEl = cellRefsMap.current.get(prev);
       if (editingEl) {
-        store.setValue(prev, editingEl.textContent ?? '');
+        const nextValue = editingEl.textContent ?? '';
+        if (store.getValue(prev) !== nextValue) {
+          store.setValue(prev, nextValue);
+          emitUserChange();
+        }
         editingCellRef.current = null;
         setEditingCell(null);
         setFormulaEditingCell(null);
         setFormulaRefCells(new Set());
         requestAnimationFrame(() => {
           if (document.activeElement !== editingEl)
-            editingEl.textContent = getDisplayValue(prev, store);
+            editingEl.textContent = getDisplayValue(prev, store, decimalsFor(prev));
         });
       }
     }
@@ -506,6 +695,37 @@ export function VirtualGrid({ rows, columns, freezeRows, freezeColumns, store, c
       setSelectedCells(cells);
   }
 
+  // ── Cell actions (context menu + toolbar) ─────────────────────────────────
+  // Cells the menu/toolbar act on: the current selection when the clicked cell
+  // is part of it, otherwise just the clicked cell (matching Excel).
+  function targetCells(cellId?: CellId): CellId[] {
+    if (cellId && !selectedCells.has(cellId)) return [cellId];
+    return [...selectedCells];
+  }
+
+  /** Clear cell CONTENT (not formatting). Bound cells are skipped — their value
+   *  is service-populated and would come straight back on the next resolve. */
+  function clearContents(ids: CellId[]) {
+    const toClear = ids.filter((id) => !isBound(id) && store.getValue(id) !== '');
+    if (toClear.length === 0) return;
+    store.setValues(toClear.map((cellId) => ({ cellId, value: '' })));
+    emitUserChange();
+  }
+
+  /** Reset formatting (font, colors, borders, link, precision) to the default. */
+  function clearFormatting(ids: CellId[]) {
+    if (ids.length === 0) return;
+    ids.forEach((id) => store.setFormat(id, makeDefaultFormat()));
+    emitUserChange();
+  }
+
+  function handleCellContextMenu(e: React.MouseEvent, cellId: CellId, row: number, col: number) {
+    if (!selectedCells.has(cellId)) setSelectedCells(new Set([cellId]));
+    const x = Math.min(e.clientX, window.innerWidth - 210);
+    const y = Math.min(e.clientY, window.innerHeight - 300);
+    setContextMenu({ type: 'cell', index: row, col, x: Math.max(0, x), y: Math.max(0, y) });
+  }
+
   // ── Context menu open ──────────────────────────────────────────────────────
   function handleColContextMenu(e: React.MouseEvent, col: number) {
     e.preventDefault();
@@ -528,41 +748,53 @@ export function VirtualGrid({ rows, columns, freezeRows, freezeColumns, store, c
   // ── Insert / delete rows ───────────────────────────────────────────────────
   function insertRowAt(at: number) {
     store.insertRow(at);
+    const nextHeights = [...rowHeights]; nextHeights.splice(at, 0, ROW_HEIGHT);
+    const nextFR = localFR > at ? localFR + 1 : localFR;
     setLocalRows((r) => r + 1);
-    setRowHeights((prev) => { const n = [...prev]; n.splice(at, 0, ROW_HEIGHT); return n; });
-    if (localFR > at) setLocalFR((f) => f + 1);
+    setRowHeights(nextHeights);
+    setLocalFR(nextFR);
     setSelectedCells(new Set());
     setContextMenu(null);
+    emitUserChange({ rows: localRows + 1, rowHeights: nextHeights, freezeRows: nextFR }, { kind: 'insertRow', index: at });
   }
 
   function deleteRowAt(at: number) {
     if (localRows <= 1) return;
     store.deleteRow(at);
+    const nextHeights = [...rowHeights]; nextHeights.splice(at, 1);
+    const nextFR = localFR > at ? Math.max(0, localFR - 1) : localFR;
     setLocalRows((r) => r - 1);
-    setRowHeights((prev) => { const n = [...prev]; n.splice(at, 1); return n; });
-    if (localFR > at) setLocalFR((f) => Math.max(0, f - 1));
+    setRowHeights(nextHeights);
+    setLocalFR(nextFR);
     setSelectedCells(new Set());
     setContextMenu(null);
+    emitUserChange({ rows: localRows - 1, rowHeights: nextHeights, freezeRows: nextFR }, { kind: 'deleteRow', index: at });
   }
 
   // ── Insert / delete columns ────────────────────────────────────────────────
   function insertColAt(at: number) {
     store.insertCol(at);
+    const nextWidths = [...colWidths]; nextWidths.splice(at, 0, COL_WIDTH);
+    const nextFC = localFC > at ? localFC + 1 : localFC;
     setLocalCols((c) => c + 1);
-    setColWidths((prev) => { const n = [...prev]; n.splice(at, 0, COL_WIDTH); return n; });
-    if (localFC > at) setLocalFC((f) => f + 1);
+    setColWidths(nextWidths);
+    setLocalFC(nextFC);
     setSelectedCells(new Set());
     setContextMenu(null);
+    emitUserChange({ columns: localCols + 1, columnWidths: nextWidths, freezeColumns: nextFC }, { kind: 'insertCol', index: at });
   }
 
   function deleteColAt(at: number) {
     if (localCols <= 1) return;
     store.deleteCol(at);
+    const nextWidths = [...colWidths]; nextWidths.splice(at, 1);
+    const nextFC = localFC > at ? Math.max(0, localFC - 1) : localFC;
     setLocalCols((c) => c - 1);
-    setColWidths((prev) => { const n = [...prev]; n.splice(at, 1); return n; });
-    if (localFC > at) setLocalFC((f) => Math.max(0, f - 1));
+    setColWidths(nextWidths);
+    setLocalFC(nextFC);
     setSelectedCells(new Set());
     setContextMenu(null);
+    emitUserChange({ columns: localCols - 1, columnWidths: nextWidths, freezeColumns: nextFC }, { kind: 'deleteCol', index: at });
   }
 
   // ── Format helpers ────────────────────────────────────────────────────────
@@ -579,12 +811,33 @@ export function VirtualGrid({ rows, columns, freezeRows, freezeColumns, store, c
   const currentTextColor           = firstFmt?.textColor    ?? '';
   const currentCellColor           = firstFmt?.cellColor    ?? '';
   const currentNumberFormat: NumberFormat = firstFmt?.numberFormat ?? 'general';
+  const currentDecimals: number | null     = firstFmt?.decimals     ?? null;
+
+  const currentLink = firstFmt?.link ?? '';
+
+  // Draft for the link popover input — re-seeded whenever the anchor cell of
+  // the selection changes so the field always shows that cell's current link.
+  const [linkDraft, setLinkDraft] = useState('');
+  const linkAnchor = selectedArr[0] ?? '';
+  useEffect(() => {
+    setLinkDraft(linkAnchor ? store.getFormat(linkAnchor).link : '');
+  }, [linkAnchor, store]);
 
   const isSideActive = (side: keyof CellBorders) =>
     hasSelection && selectedArr.every((id) => store.getFormat(id).borders[side].enabled);
 
+  // Keyboard activation for the div-based popover triggers (role="button") —
+  // Enter/Space must work wherever click does.
+  const keyActivate = (e: React.KeyboardEvent) => {
+    if (e.key === 'Enter' || e.key === ' ') {
+      e.preventDefault();
+      (e.currentTarget as HTMLElement).click();
+    }
+  };
+
   function applyFmt(patch: Partial<CellFormat>) {
     selectedArr.forEach((id) => store.setFormat(id, { ...store.getFormat(id), ...patch }));
+    if (selectedArr.length > 0) emitUserChange();
   }
 
   function toggleSide(side: keyof CellBorders) {
@@ -602,6 +855,7 @@ export function VirtualGrid({ rows, columns, freezeRows, freezeColumns, store, c
         },
       });
     });
+    if (selectedArr.length > 0) emitUserChange();
   }
 
   function applyAllBorders(enabled: boolean) {
@@ -619,6 +873,7 @@ export function VirtualGrid({ rows, columns, freezeRows, freezeColumns, store, c
         });
       });
     });
+    if (selectedArr.length > 0) emitUserChange();
   }
 
   // ── Build visible row/col sets (virtual + frozen) ─────────────────────────
@@ -651,7 +906,7 @@ export function VirtualGrid({ rows, columns, freezeRows, freezeColumns, store, c
       <div
         key="corner"
         className="vg-cell vg-header-cell vg-corner-cell"
-        style={{ gridRow: 1, gridColumn: 1, ...stickyStyle(true, true, -1, -1, localFR, localFC, colWidths, rowHeights), ...frozenEdgeShadow(true, true) }}
+        style={{ gridRow: 1, gridColumn: 1, ...stickyStyle(true, true, -1, -1, localFR, localFC, layoutColWidths, effectiveRowHeights), ...frozenEdgeShadow(true, true) }}
         onClick={handleCornerClick}
       />,
     );
@@ -665,7 +920,7 @@ export function VirtualGrid({ rows, columns, freezeRows, freezeColumns, store, c
             gridRow: 1,
             gridColumn: col + 2,
             position: 'relative',
-            ...stickyStyle(true, false, -1, col, localFR, localFC, colWidths, rowHeights),
+            ...stickyStyle(true, false, -1, col, localFR, localFC, layoutColWidths, effectiveRowHeights),
             ...frozenEdgeShadow(localFC > 0 && col === localFC - 1, true),
           }}
           onClick={(e) => handleColHeaderClick(e, col)}
@@ -694,7 +949,7 @@ export function VirtualGrid({ rows, columns, freezeRows, freezeColumns, store, c
   // Data rows — only visible rows (rowSet)
   for (const row of rowSet) {
     if (hiddenRows?.has(row)) continue; // row filter hid this row — collapsed via gridTemplateRows below
-    const rh = rowHeights[row] ?? ROW_HEIGHT;
+    const rh = effectiveRowHeights[row] ?? ROW_HEIGHT;
 
     // Row number cell — hidden in locked mode
     if (!locked) {
@@ -707,7 +962,7 @@ export function VirtualGrid({ rows, columns, freezeRows, freezeColumns, store, c
             gridColumn: 1,
             position: 'relative',
             height: rh,
-            ...stickyStyle(false, true, row, -1, localFR, localFC, colWidths, rowHeights),
+            ...stickyStyle(false, true, row, -1, localFR, localFC, layoutColWidths, effectiveRowHeights),
             ...frozenEdgeShadow(true, localFR > 0 && row === localFR - 1),
           }}
           onClick={(e) => handleRowHeaderClick(e, row)}
@@ -740,7 +995,10 @@ export function VirtualGrid({ rows, columns, freezeRows, freezeColumns, store, c
     for (const col of colSet) {
       const cellId: CellId = `R${row}C${col}`;
       const fmt = store.getFormat(cellId);
-      const cfPatch = evaluateConditionalRules(getDisplayValue(cellId, store), conditionalRules, row, col);
+      // Rules compare the COMPUTED value, not the formatted display string:
+      // "1,234.50" parseFloats to 1 and "$1,234.50" to NaN, so threshold rules
+      // on formatted columns would silently misfire.
+      const cfPatch = evaluateConditionalRules(getComputedValue(cellId, store), conditionalRules, row, col);
 
       // In locked mode headers are absent so the first row/col have no outer border.
       // Add border-top on row 0 when horizontal lines are visible (all | rows),
@@ -767,9 +1025,10 @@ export function VirtualGrid({ rows, columns, freezeRows, freezeColumns, store, c
         ...lockedTopBorder,
         ...lockedLeftBorder,
         ...cellBorderInlineStyle(fmt.borders),
-        ...stickyStyle(false, false, row, col, localFR, localFC, colWidths, rowHeights, !locked),
+        ...stickyStyle(false, false, row, col, localFR, localFC, layoutColWidths, effectiveRowHeights, !locked),
         ...frozenEdgeShadow(localFC > 0 && col === localFC - 1, localFR > 0 && row === localFR - 1),
         ...(formulaEditingCell !== null && formulaEditingCell !== cellId ? { cursor: 'cell' } : {}),
+        ...(locked && fmt.link ? { cursor: 'pointer' } : {}),
       };
 
       const bound = boundCells?.get(cellId);
@@ -780,6 +1039,9 @@ export function VirtualGrid({ rows, columns, freezeRows, freezeColumns, store, c
         formulaRefCells.has(cellId) ? 'vg-cell--formula-ref' : '',
         bound ? 'vg-cell--bound' : '',
         bound?.kind === 'series-base' ? 'vg-cell--series-base' : '',
+        fmt.link ? 'vg-cell--link' : '',
+        searchMatches?.has(cellId) ? 'vg-cell--match' : '',
+        activeMatch === cellId ? 'vg-cell--match-active' : '',
         previewCells?.has(cellId) ? 'vg-cell--preview' : '',
         row < localFR ? 'vg-cell--frozen-row' : '',
         col < localFC ? 'vg-cell--frozen-col' : '',
@@ -792,7 +1054,7 @@ export function VirtualGrid({ rows, columns, freezeRows, freezeColumns, store, c
           key={cellId}
           className={classNames}
           style={cellInlineStyle}
-          title={bound ? bound.topic : undefined}
+          title={bound ? bound.topic : (fmt.link || undefined)}
           contentEditable={!locked && !bound}
           suppressContentEditableWarning
           ref={(el: HTMLDivElement | null) => {
@@ -800,7 +1062,7 @@ export function VirtualGrid({ rows, columns, freezeRows, freezeColumns, store, c
               cellRefsMap.current.set(cellId, el);
               // Don't overwrite content while this cell is in edit mode
               if (editingCellRef.current !== cellId && document.activeElement !== el) {
-                el.textContent = getDisplayValue(cellId, store);
+                el.textContent = getDisplayValue(cellId, store, decimalsFor(cellId));
               }
             } else {
               cellRefsMap.current.delete(cellId);
@@ -821,21 +1083,52 @@ export function VirtualGrid({ rows, columns, freezeRows, freezeColumns, store, c
             }
             // Edit mode on this cell or switching cells: allow natural browser focus
           }}
-          onClick={(e) => handleCellClick(e, cellId)}
+          onClick={(e) => {
+            // A linked cell acts as a hyperlink for the viewer (locked mode) and
+            // on Ctrl/Cmd-click while editing — the spreadsheet convention, so
+            // the author can test a link without locking the table first.
+            if (fmt.link && (locked || e.ctrlKey || e.metaKey)) {
+              e.stopPropagation();
+              window.open(fmt.link, '_blank', 'noopener,noreferrer');
+              return;
+            }
+            handleCellClick(e, cellId);
+          }}
           onDoubleClick={(e) => {
             e.stopPropagation();
             if (locked) return;
-            // Double-click configures the cell's binding (host opens the popover).
-            // Fall back to text edit when no config handler is wired.
-            if (onCellConfigure) {
+            // Standard spreadsheet convention: double-click edits the cell's
+            // text. Bound cells aren't manually editable, so there double-click
+            // opens the binding popover instead; unbound cells reach it via
+            // right-click (context menu handler below).
+            if (bound && onCellConfigure) {
               onCellConfigure(cellId, e.currentTarget.getBoundingClientRect());
             } else {
               enterEditMode(cellId);
             }
           }}
+          onContextMenu={!locked ? (e) => {
+            // Right-click opens the cell menu (clear, format, bind, row/column
+            // ops). Left-click selection is preserved when the cell is already
+            // part of the selection so a menu action can act on the whole block.
+            e.preventDefault();
+            e.stopPropagation();
+            handleCellContextMenu(e, cellId, row, col);
+          } : undefined}
           onFocus={(e) => {
-            // Content is set by enterEditMode; just detect formula mode from current content
-            const content = e.currentTarget.textContent ?? '';
+            const el = e.currentTarget;
+            // Focus that arrives OUTSIDE enterEditMode (click-through while
+            // another cell was being edited) must still become a real edit
+            // session: load the RAW value into the DOM. Otherwise the cell
+            // holds its formatted display string ("5" for "=A1+1", "50.00%"
+            // for 0.5) and the eventual blur-save destroys the formula/value.
+            if (editingCellRef.current !== cellId) {
+              editingCellRef.current = cellId;
+              setEditingCell(cellId);
+              el.textContent = store.getValue(cellId);
+              moveCursor(el, el.textContent?.length ?? 0);
+            }
+            const content = el.textContent ?? '';
             if (content.startsWith('=')) {
               setFormulaEditingCell(cellId);
               setFormulaRefCells(extractFormulaRefs(content));
@@ -875,18 +1168,26 @@ export function VirtualGrid({ rows, columns, freezeRows, freezeColumns, store, c
               setFormulaEditingCell(null);
               setFormulaRefCells(new Set());
             }
-            if (editingCellRef.current === cellId) {
+            const wasEditing = editingCellRef.current === cellId;
+            if (wasEditing) {
               editingCellRef.current = null;
               setEditingCell(null);
             }
-            if (!discardOnBlurRef.current) {
-              store.setValue(cellId, e.currentTarget.textContent ?? '');
+            // Save ONLY when this blur ends an actual edit session — a cell
+            // that was merely focused still shows its formatted display text,
+            // and writing that back would overwrite the raw value/formula.
+            if (wasEditing && !discardOnBlurRef.current) {
+              const nextValue = e.currentTarget.textContent ?? '';
+              if (store.getValue(cellId) !== nextValue) {
+                store.setValue(cellId, nextValue);
+                emitUserChange();
+              }
             }
             discardOnBlurRef.current = false;
             requestAnimationFrame(() => {
               const el = cellRefsMap.current.get(cellId);
               if (el && document.activeElement !== el) {
-                el.textContent = getDisplayValue(cellId, store);
+                el.textContent = getDisplayValue(cellId, store, decimalsFor(cellId));
               }
             });
           }}
@@ -898,13 +1199,10 @@ export function VirtualGrid({ rows, columns, freezeRows, freezeColumns, store, c
   // ── Grid template strings ─────────────────────────────────────────────────
   // In locked mode headers are hidden: no row-num column and no header row in the template
   const gridTemplateColumns = locked
-    ? colWidths.slice(0, localCols).map((w) => `${w}px`).join(' ')
-    : `${ROW_NUM_WIDTH}px ${colWidths.slice(0, localCols).map((w) => `${w}px`).join(' ')}`;
-  // Row-filter-hidden rows collapse to a 0px track — rowHeights itself (which
-  // also drives the virtualizer's estimateSize) is left untouched.
-  const effectiveRowHeights = rowHeights
-    .slice(0, localRows)
-    .map((h, i) => (hiddenRows?.has(i) ? 0 : h));
+    ? layoutColWidths.map((w) => `${w}px`).join(' ')
+    : `${ROW_NUM_WIDTH}px ${layoutColWidths.map((w) => `${w}px`).join(' ')}`;
+  // effectiveRowHeights (hidden rows collapsed to 0) is computed above, next to
+  // the virtualizer that shares it.
   const gridTemplateRows = locked
     ? effectiveRowHeights.map((h) => `${h}px`).join(' ')
     : `${ROW_HEIGHT}px ${effectiveRowHeights.map((h) => `${h}px`).join(' ')}`;
@@ -920,9 +1218,9 @@ export function VirtualGrid({ rows, columns, freezeRows, freezeColumns, store, c
         className={`vg-toolbar${hasSelection ? '' : ' vg-toolbar--hidden'}`}
         onClick={(e) => e.stopPropagation()}
       >
-        <Button iconOnly leadingIcon={<Bold size={14} />}      variant={isAllBold      ? 'Primary' : 'Gray'} size="XSmall" onClick={() => applyFmt({ bold:      !isAllBold      })} />
-        <Button iconOnly leadingIcon={<Italic size={14} />}    variant={isAllItalic    ? 'Primary' : 'Gray'} size="XSmall" onClick={() => applyFmt({ italic:    !isAllItalic    })} />
-        <Button iconOnly leadingIcon={<Underline size={14} />} variant={isAllUnderline ? 'Primary' : 'Gray'} size="XSmall" onClick={() => applyFmt({ underline: !isAllUnderline })} />
+        <Button iconOnly aria-label="Bold" leadingIcon={<Bold size={14} />}      variant={isAllBold      ? 'Primary' : 'Gray'} size="XSmall" onClick={() => applyFmt({ bold:      !isAllBold      })} />
+        <Button iconOnly aria-label="Italic" leadingIcon={<Italic size={14} />}    variant={isAllItalic    ? 'Primary' : 'Gray'} size="XSmall" onClick={() => applyFmt({ italic:    !isAllItalic    })} />
+        <Button iconOnly aria-label="Underline" leadingIcon={<Underline size={14} />} variant={isAllUnderline ? 'Primary' : 'Gray'} size="XSmall" onClick={() => applyFmt({ underline: !isAllUnderline })} />
 
         <span className="vg-divider" />
 
@@ -940,9 +1238,9 @@ export function VirtualGrid({ rows, columns, freezeRows, freezeColumns, store, c
 
         <span className="vg-divider" />
 
-        <Button iconOnly leadingIcon={<AlignLeft   size={14} />} variant={currentAlign === 'left'   ? 'Primary' : 'Gray'} size="XSmall" onClick={() => applyFmt({ textAlign: 'left'   })} />
-        <Button iconOnly leadingIcon={<AlignCenter size={14} />} variant={currentAlign === 'center' ? 'Primary' : 'Gray'} size="XSmall" onClick={() => applyFmt({ textAlign: 'center' })} />
-        <Button iconOnly leadingIcon={<AlignRight  size={14} />} variant={currentAlign === 'right'  ? 'Primary' : 'Gray'} size="XSmall" onClick={() => applyFmt({ textAlign: 'right'  })} />
+        <Button iconOnly aria-label="Align left" leadingIcon={<AlignLeft   size={14} />} variant={currentAlign === 'left'   ? 'Primary' : 'Gray'} size="XSmall" onClick={() => applyFmt({ textAlign: 'left'   })} />
+        <Button iconOnly aria-label="Align center" leadingIcon={<AlignCenter size={14} />} variant={currentAlign === 'center' ? 'Primary' : 'Gray'} size="XSmall" onClick={() => applyFmt({ textAlign: 'center' })} />
+        <Button iconOnly aria-label="Align right" leadingIcon={<AlignRight  size={14} />} variant={currentAlign === 'right'  ? 'Primary' : 'Gray'} size="XSmall" onClick={() => applyFmt({ textAlign: 'right'  })} />
 
         <span className="vg-divider" />
 
@@ -959,12 +1257,43 @@ export function VirtualGrid({ rows, columns, freezeRows, freezeColumns, store, c
           <option value="currency">$</option>
         </select>
 
+        {/* Decimal places for the selection — blank inherits the widget default */}
+        <span className="vg-numfmt-decimals" title="Decimal places (blank = widget default)">
+          <Hash size={11} />
+          <input
+            className="vg-font-size-input vg-font-size-input--narrow"
+            type="number"
+            min={0}
+            max={10}
+            placeholder={dataPrecision === null ? '—' : String(dataPrecision)}
+            value={currentDecimals === null ? '' : currentDecimals}
+            onChange={(e: React.ChangeEvent<HTMLInputElement>) => {
+              const raw = e.target.value;
+              if (raw === '') { applyFmt({ decimals: null }); return; }
+              const d = parseInt(raw, 10);
+              if (!isNaN(d) && d >= 0 && d <= 10) applyFmt({ decimals: d });
+            }}
+          />
+        </span>
+
+        <span className="vg-divider" />
+
+        {/* Clear the selected cells' contents */}
+        <Button
+          iconOnly
+          aria-label="Clear cell contents"
+          leadingIcon={<XSquare size={14} />}
+          variant="Gray"
+          size="XSmall"
+          onClick={() => clearContents(selectedArr)}
+        />
+
         <span className="vg-divider" />
 
         {/* Text color */}
         <Popover
           trigger={
-            <div className="vg-color-trigger" role="button" tabIndex={0} title="Text color">
+            <div className="vg-color-trigger" role="button" tabIndex={0} title="Text color" onKeyDown={keyActivate}>
               <Type size={13} />
               <span className="vg-color-trigger__bar" style={{ backgroundColor: currentTextColor || '#1a1a1a' }} />
             </div>
@@ -973,17 +1302,19 @@ export function VirtualGrid({ rows, columns, freezeRows, freezeColumns, store, c
         >
           <PopoverHeader title="Text Color" showClose />
           <PopoverBody>
-            <ColorPicker
-              selectedColor={currentTextColor || '#1a1a1a'}
-              onColorSelect={(color) => applyFmt({ textColor: color })}
-            />
+            <div className="vg-color-panel" onClick={(e) => e.stopPropagation()}>
+              <ColorInput
+                value={currentTextColor || '#1a1a1a'}
+                onChange={(color: string) => applyFmt({ textColor: color })}
+              />
+            </div>
           </PopoverBody>
         </Popover>
 
         {/* Fill color */}
         <Popover
           trigger={
-            <div className="vg-color-trigger" role="button" tabIndex={0} title="Fill color">
+            <div className="vg-color-trigger" role="button" tabIndex={0} title="Fill color" onKeyDown={keyActivate}>
               <Droplet size={13} />
               <span
                 className="vg-color-trigger__bar"
@@ -998,10 +1329,39 @@ export function VirtualGrid({ rows, columns, freezeRows, freezeColumns, store, c
         >
           <PopoverHeader title="Fill Color" showClose />
           <PopoverBody>
-            <ColorPicker
-              selectedColor={currentCellColor || '#ffffff'}
-              onColorSelect={(color) => applyFmt({ cellColor: color })}
-            />
+            <div className="vg-color-panel" onClick={(e) => e.stopPropagation()}>
+              <ColorInput
+                value={currentCellColor || '#ffffff'}
+                onChange={(color: string) => applyFmt({ cellColor: color })}
+              />
+            </div>
+          </PopoverBody>
+        </Popover>
+
+        <span className="vg-divider" />
+
+        {/* Cell hyperlink */}
+        <Popover
+          trigger={
+            <Button iconOnly aria-label="Cell link" leadingIcon={<LinkIcon size={14} />} variant={currentLink ? 'Primary' : 'Gray'} size="XSmall" />
+          }
+          placement="Bottom Start"
+        >
+          <PopoverHeader title="Cell Link" showClose />
+          <PopoverBody>
+            <div className="vg-link-panel" onClick={(e) => e.stopPropagation()}>
+              <TextInput
+                label="URL"
+                placeholder="https://…"
+                value={linkDraft}
+                onChange={({ value }: { name: string; value: string }) => setLinkDraft(value)}
+              />
+              <div className="vg-link-panel__row">
+                <Button variant="Primary" size="XSmall" label="Apply" onClick={() => applyFmt({ link: linkDraft.trim() })} />
+                <Button variant="Secondary" size="XSmall" label="Remove" onClick={() => { setLinkDraft(''); applyFmt({ link: '' }); }} />
+              </div>
+              <p className="vg-link-panel__hint">Opens on click when the table is locked, or on Ctrl/Cmd-click while editing.</p>
+            </div>
           </PopoverBody>
         </Popover>
 
@@ -1010,7 +1370,7 @@ export function VirtualGrid({ rows, columns, freezeRows, freezeColumns, store, c
         {/* Cell borders */}
         <Popover
           trigger={
-            <Button iconOnly leadingIcon={<Grid size={14} />} variant="Gray" size="XSmall" />
+            <Button iconOnly aria-label="Cell borders" leadingIcon={<Grid size={14} />} variant="Gray" size="XSmall" />
           }
           placement="Bottom End"
         >
@@ -1060,23 +1420,12 @@ export function VirtualGrid({ rows, columns, freezeRows, freezeColumns, store, c
               </div>
 
               <p className="vg-border-panel__label">Color</p>
-              <Popover
-                trigger={
-                  <div className="vg-color-trigger vg-color-trigger--wide" role="button" tabIndex={0} title="Border color">
-                    <span className="vg-color-trigger__swatch-wide" style={{ backgroundColor: borderConfig.color }} />
-                    <span className="vg-color-trigger__hex">{borderConfig.color}</span>
-                  </div>
-                }
-                placement="Right Start"
-              >
-                <PopoverHeader title="Border Color" showClose />
-                <PopoverBody>
-                  <ColorPicker
-                    selectedColor={borderConfig.color}
-                    onColorSelect={(color) => setBorderConfig((c) => ({ ...c, color }))}
-                  />
-                </PopoverBody>
-              </Popover>
+              <div className="vg-color-panel">
+                <ColorInput
+                  value={borderConfig.color}
+                  onChange={(color: string) => setBorderConfig((c) => ({ ...c, color }))}
+                />
+              </div>
 
             </div>
           </PopoverBody>
@@ -1099,7 +1448,7 @@ export function VirtualGrid({ rows, columns, freezeRows, freezeColumns, store, c
 
       {/* ── Grid ── */}
       <div
-        className="vg-grid-wrap"
+        className={`vg-grid-wrap${fitToBounds ? ' vg-grid-wrap--fit' : ''}`}
         ref={gridWrapRef}
         tabIndex={0}
         onKeyDown={(e) => {
@@ -1126,7 +1475,7 @@ export function VirtualGrid({ rows, columns, freezeRows, freezeColumns, store, c
             if (id) enterEditMode(id);
           } else if (!locked && (e.key === 'Backspace' || e.key === 'Delete')) {
             e.preventDefault();
-            [...selectedCells].filter((sid) => !isBound(sid)).forEach((sid) => store.setValue(sid, ''));
+            clearContents([...selectedCells]);
           } else if (!locked && !e.ctrlKey && !e.metaKey && !e.altKey && e.key.length === 1) {
             // Printable char: enter edit mode with that character (overwrites)
             if (id && !isBound(id)) {
@@ -1151,16 +1500,57 @@ export function VirtualGrid({ rows, columns, freezeRows, freezeColumns, store, c
           style={{ top: contextMenu.y, left: contextMenu.x }}
           onClick={(e) => e.stopPropagation()}
         >
-          {contextMenu.type === 'col' ? (
+          {contextMenu.type === 'cell' ? (
+            <>
+              <button
+                className="vg-context-menu__item"
+                onClick={() => {
+                  const ids = targetCells(`R${contextMenu.index}C${contextMenu.col}`);
+                  setContextMenu(null);
+                  clearContents(ids);
+                }}
+              >Clear contents</button>
+              <button
+                className="vg-context-menu__item"
+                onClick={() => {
+                  const ids = targetCells(`R${contextMenu.index}C${contextMenu.col}`);
+                  setContextMenu(null);
+                  clearFormatting(ids);
+                }}
+              >Clear formatting</button>
+              {onCellConfigure && (
+                <>
+                  <div className="vg-context-menu__sep" />
+                  <button
+                    className="vg-context-menu__item"
+                    onClick={() => {
+                      const cellId: CellId = `R${contextMenu.index}C${contextMenu.col}`;
+                      const el = cellRefsMap.current.get(cellId);
+                      setContextMenu(null);
+                      if (el) onCellConfigure(cellId, el.getBoundingClientRect());
+                    }}
+                  >
+                    <Settings size={11} /> Bind to UNS topic…
+                  </button>
+                </>
+              )}
+              <div className="vg-context-menu__sep" />
+              <button className="vg-context-menu__item" onClick={() => insertRowAt(contextMenu.index)}>Insert row above</button>
+              <button className="vg-context-menu__item" onClick={() => insertColAt(contextMenu.col ?? 0)}>Insert column left</button>
+              <div className="vg-context-menu__sep" />
+              <button className="vg-context-menu__item vg-context-menu__item--danger" onClick={() => deleteRowAt(contextMenu.index)}>Delete row</button>
+              <button className="vg-context-menu__item vg-context-menu__item--danger" onClick={() => deleteColAt(contextMenu.col ?? 0)}>Delete column</button>
+            </>
+          ) : contextMenu.type === 'col' ? (
             <>
               <button className="vg-context-menu__item" onClick={() => insertColAt(contextMenu.index)}>Insert column left</button>
               <button className="vg-context-menu__item" onClick={() => insertColAt(contextMenu.index + 1)}>Insert column right</button>
               <div className="vg-context-menu__sep" />
               <button className="vg-context-menu__item vg-context-menu__item--danger" onClick={() => deleteColAt(contextMenu.index)}>Delete column</button>
               <div className="vg-context-menu__sep" />
-              <button className="vg-context-menu__item" onClick={() => { setLocalFC(contextMenu.index + 1); setContextMenu(null); }}>Freeze up to here</button>
+              <button className="vg-context-menu__item" onClick={() => { setLocalFC(contextMenu.index + 1); setContextMenu(null); emitUserChange({ freezeColumns: contextMenu.index + 1 }); }}>Freeze up to here</button>
               {localFC > 0 && (
-                <button className="vg-context-menu__item" onClick={() => { setLocalFC(0); setContextMenu(null); }}>Unfreeze columns</button>
+                <button className="vg-context-menu__item" onClick={() => { setLocalFC(0); setContextMenu(null); emitUserChange({ freezeColumns: 0 }); }}>Unfreeze columns</button>
               )}
             </>
           ) : (
@@ -1170,9 +1560,9 @@ export function VirtualGrid({ rows, columns, freezeRows, freezeColumns, store, c
               <div className="vg-context-menu__sep" />
               <button className="vg-context-menu__item vg-context-menu__item--danger" onClick={() => deleteRowAt(contextMenu.index)}>Delete row</button>
               <div className="vg-context-menu__sep" />
-              <button className="vg-context-menu__item" onClick={() => { setLocalFR(contextMenu.index + 1); setContextMenu(null); }}>Freeze up to here</button>
+              <button className="vg-context-menu__item" onClick={() => { setLocalFR(contextMenu.index + 1); setContextMenu(null); emitUserChange({ freezeRows: contextMenu.index + 1 }); }}>Freeze up to here</button>
               {localFR > 0 && (
-                <button className="vg-context-menu__item" onClick={() => { setLocalFR(0); setContextMenu(null); }}>Unfreeze rows</button>
+                <button className="vg-context-menu__item" onClick={() => { setLocalFR(0); setContextMenu(null); emitUserChange({ freezeRows: 0 }); }}>Unfreeze rows</button>
               )}
             </>
           )}

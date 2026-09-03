@@ -5,7 +5,6 @@
   height: 100%;
   overflow: hidden;
 }
-
 /* ── Toolbar ── */
 .vg-toolbar {
   display: flex;
@@ -19,17 +18,14 @@
   overflow-x: auto;
   overflow-y: hidden;
 }
-
 /* Hide scrollbar on toolbar */
 .vg-toolbar::-webkit-scrollbar { display: none; }
 .vg-toolbar { scrollbar-width: none; }
-
 /* Toolbar hidden state — preserves height to prevent grid layout shift */
 .vg-toolbar--hidden {
   visibility: hidden;
   pointer-events: none;
 }
-
 .vg-divider {
   flex-shrink: 0;
   display: inline-block;
@@ -38,7 +34,6 @@
   background: var(--fds-border-subtle, #e0e0e0);
   margin: 0 var(--spacing-02, 4px);
 }
-
 /* ── Font size input ── */
 .vg-font-size-input {
   width: 44px;
@@ -60,7 +55,6 @@
   border-color: var(--background-brand-default, #0073ea);
   box-shadow: 0 0 0 2px rgba(0,115,234,0.15);
 }
-
 /* ── Color trigger buttons ── */
 .vg-color-trigger {
   flex-shrink: 0;
@@ -84,7 +78,6 @@
   background: var(--background-gray-hover-light, #f0f0f0);
   border-color: var(--fds-border-subtle, #ddd);
 }
-
 /* Colored bar below the icon (shows current color) */
 .vg-color-trigger__bar {
   display: block;
@@ -93,30 +86,6 @@
   border-radius: 2px;
   flex-shrink: 0;
 }
-
-/* Wide color trigger — used inside border panel */
-.vg-color-trigger--wide {
-  flex-direction: row;
-  width: auto;
-  gap: var(--spacing-02, 4px);
-  padding: var(--spacing-02, 4px) var(--spacing-03, 8px);
-  height: 32px;
-  border-color: var(--fds-border-subtle, #ddd);
-}
-.vg-color-trigger__swatch-wide {
-  display: block;
-  width: 16px;
-  height: 16px;
-  border-radius: 3px;
-  border: 1px solid var(--fds-border-subtle, #ddd);
-  flex-shrink: 0;
-}
-.vg-color-trigger__hex {
-  font-size: 12px;
-  font-family: monospace;
-  color: var(--text-default-secondary, #555);
-}
-
 /* ── Border panel (inside Popover) ── */
 .vg-border-panel {
   display: flex;
@@ -125,7 +94,6 @@
   padding: var(--spacing-02, 4px);
   min-width: 200px;
 }
-
 .vg-border-panel__label {
   margin: 0;
   font-size: 10px;
@@ -134,13 +102,11 @@
   text-transform: uppercase;
   letter-spacing: 0.07em;
 }
-
 .vg-border-panel__row {
   display: flex;
   flex-wrap: wrap;
   gap: var(--spacing-02, 4px);
 }
-
 /* ── Visual cell border diagram ── */
 .vg-border-diagram {
   position: relative;
@@ -151,7 +117,6 @@
   margin: 0 auto;
   flex-shrink: 0;
 }
-
 /* The inner cell preview */
 .vg-border-diagram__cell {
   position: absolute;
@@ -161,7 +126,6 @@
   border-radius: 2px;
   pointer-events: none;
 }
-
 /* Shared side styles */
 .vg-border-diagram__top,
 .vg-border-diagram__bottom {
@@ -185,12 +149,10 @@
   background: var(--fds-border-default, #ccc);
   transition: background 0.12s, transform 0.1s;
 }
-
 .vg-border-diagram__top    { top: 8px; }
 .vg-border-diagram__bottom { bottom: 8px; }
 .vg-border-diagram__left   { left: 8px; }
 .vg-border-diagram__right  { right: 8px; }
-
 /* Active = brand blue */
 [data-active="true"].vg-border-diagram__top,
 [data-active="true"].vg-border-diagram__bottom,
@@ -213,7 +175,6 @@
   background: var(--background-brand-default, #0073ea);
   opacity: 0.75;
 }
-
 /* ── Border style / width visual buttons ── */
 .vg-border-style-btn {
   display: flex;
@@ -245,7 +206,6 @@
 .vg-border-style-btn--active .vg-border-style-btn__line {
   border-top-color: var(--background-brand-default, #0073ea);
 }
-
 /* ── Formula bar ── */
 .vg-formula-bar {
   display: flex;
@@ -256,7 +216,6 @@
   background: var(--background-default-intense, #fff);
   font-size: 12px;
 }
-
 .vg-formula-bar__name {
   width: 64px;
   flex-shrink: 0;
@@ -270,7 +229,6 @@
   background: var(--background-info-secondary, #e8f4fd);
   border-right: 1px solid var(--fds-border-subtle, #eee);
 }
-
 .vg-formula-bar__fx {
   padding: 0 var(--spacing-03, 8px);
   color: var(--text-default-tertiary, #999);
@@ -279,7 +237,6 @@
   flex-shrink: 0;
   border-right: 1px solid var(--fds-border-subtle, #eee);
 }
-
 .vg-formula-bar__content {
   flex: 1;
   padding: 0 var(--spacing-03, 8px);
@@ -290,20 +247,17 @@
   text-overflow: ellipsis;
   color: var(--text-default-primary, #1a1a1a);
 }
-
 .vg-formula-bar__content--picking {
   color: var(--text-default-tertiary, #999);
   font-style: italic;
   font-family: inherit;
 }
-
 /* ── Formula-referenced cell highlight ── */
 .vg-cell--formula-ref {
   background: var(--background-info-secondary, #e8f4fd) !important;
   outline: 2px solid var(--background-brand-default, #0073ea);
   outline-offset: -2px;
 }
-
 /* ── Scrollable grid wrapper ── */
 .vg-grid-wrap {
   flex: 1;
@@ -311,7 +265,6 @@
   position: relative;
   outline: none;
 }
-
 /* table border style overrides — applied on the vg-grid, not the wrapper */
 .vg-grid--border-none .vg-data-cell {
   border-right: none;
@@ -323,13 +276,11 @@
 .vg-grid--border-columns .vg-data-cell {
   border-bottom: none;
 }
-
 /* ── CSS Grid ── */
 .vg-grid {
   display: grid;
   width: max-content;
 }
-
 /* ── Base cell ── */
 .vg-cell {
   height: 32px;
@@ -341,7 +292,6 @@
   overflow: hidden;
   white-space: nowrap;
 }
-
 /* ── Header row cells ── */
 .vg-header-cell {
   background: var(--background-default-subtle, #f5f5f5);
@@ -357,11 +307,9 @@
   user-select: none;
   overflow: visible;
 }
-
 .vg-header-cell:hover {
   background: var(--background-gray-hover-light, #eaeaea);
 }
-
 /* ── Corner cell ── */
 .vg-corner-cell {
   position: sticky;
@@ -370,7 +318,6 @@
   z-index: 3;
   border-right: 2px solid var(--fds-border-default, #bbb);
 }
-
 /* ── Row number cells ── */
 .vg-rownum-cell {
   background: var(--background-default-subtle, #f5f5f5);
@@ -385,11 +332,9 @@
   user-select: none;
   overflow: visible;
 }
-
 .vg-rownum-cell:hover {
   background: var(--background-gray-hover-light, #eaeaea);
 }
-
 /* ── Data cells ── */
 .vg-data-cell {
   display: block;
@@ -405,7 +350,6 @@
   z-index: 4;
   position: relative;
 }
-
 /* ── Selected state ── */
 .vg-cell--selected {
   background: var(--background-info-secondary, #e8f4fd) !important;
@@ -413,11 +357,9 @@
 .vg-cell--selected:focus {
   box-shadow: inset 0 0 0 2px var(--background-info-default, #0078d4);
 }
-
 /* ── Frozen row / column ── */
 .vg-cell--frozen-row { border-bottom-color: var(--fds-border-default, #bbb); }
 .vg-cell--frozen-col { border-right-color:  var(--fds-border-default, #bbb); }
-
 /* ── Bound cell indicator ── */
 /* A small triangle in the top-right corner marks a cell that carries a UNS
    binding (value populated by the service, not typeable). Rendered via ::before
@@ -441,20 +383,17 @@
 .vg-cell--series-base::before {
   border-top-color: var(--background-purple-default, #7c4dff);
 }
-
 /* ── Series spill preview (while a series config popover is open) ── */
 .vg-cell--preview {
   background: var(--background-purple-secondary, #f0ebff) !important;
   outline: 1px dashed var(--background-purple-default, #7c4dff);
   outline-offset: -1px;
 }
-
 /* Constrain ColorPicker width to fit inside Popover */
 .vg-color-picker-wrap {
   width: 224px;
   overflow: hidden;
 }
-
 /* ── Resize handles ── */
 .vg-resize-handle--col {
   position: absolute;
@@ -465,7 +404,6 @@
   cursor: col-resize;
   z-index: 10;
 }
-
 .vg-resize-handle--row {
   position: absolute;
   bottom: 0;
@@ -475,7 +413,6 @@
   cursor: row-resize;
   z-index: 10;
 }
-
 .vg-resize-handle--col:hover::after,
 .vg-resize-handle--row:hover::after {
   content: '';
@@ -485,21 +422,18 @@
   opacity: 0.5;
   border-radius: 2px;
 }
-
 .vg-resize-handle--col:hover::after {
   right: 1px;
   top: 15%;
   width: 2px;
   height: 70%;
 }
-
 .vg-resize-handle--row:hover::after {
   bottom: 1px;
   left: 15%;
   height: 2px;
   width: 70%;
 }
-
 /* ── Number format select in toolbar ── */
 .vg-numfmt-select {
   height: 28px;
@@ -517,7 +451,6 @@
 .vg-numfmt-select:focus {
   border-color: var(--background-brand-default, #0073ea);
 }
-
 /* ── Context menu ── */
 .vg-context-menu {
   position: fixed;
@@ -530,9 +463,10 @@
   padding: 4px 0;
   overflow: hidden;
 }
-
 .vg-context-menu__item {
-  display: block;
+  display: flex;
+  align-items: center;
+  gap: 8px;
   width: 100%;
   padding: 6px 14px;
   font-size: 13px;
@@ -544,21 +478,65 @@
   color: var(--text-default-primary, #1a1a1a);
   white-space: nowrap;
 }
-
 .vg-context-menu__item:hover {
   background: var(--background-gray-hover-light, #f0f0f0);
 }
-
 .vg-context-menu__item--danger {
   color: var(--text-danger-default, #d93025);
 }
-
 .vg-context-menu__item--danger:hover {
   background: var(--background-danger-secondary, #fdecea);
 }
-
 .vg-context-menu__sep {
   height: 1px;
   background: var(--fds-border-subtle, #eee);
   margin: 3px 0;
 }
+/* ── Cell hyperlink ─────────────────────────────────────────────────────── */
+.vg-cell--link {
+  color: var(--text-link, #0073ea);
+  text-decoration: underline;
+}
+.vg-link-panel {
+  display: flex;
+  flex-direction: column;
+  gap: var(--spacing-03, 8px);
+  width: 220px;
+}
+.vg-link-panel__row {
+  display: flex;
+  gap: var(--spacing-02, 6px);
+}
+.vg-link-panel__hint {
+  margin: 0;
+  font-size: 11px;
+  color: var(--text-gray-subtle, #888);
+}
+/* ── Locked fit-to-bounds ──────────────────────────────────────────────────
+   A locked table is scaled to its widget box exactly, so any scrollbar would
+   be a rounding artefact — and the scrollbar itself would shrink the viewport
+   the fit was computed against. */
+.vg-grid-wrap--fit { overflow: hidden; }
+/* ── In-table search ── */
+.vg-cell--match {
+  background: var(--background-warning-secondary, #fff4ce) !important;
+  box-shadow: inset 0 0 0 1px var(--background-warning-default, #f0b429);
+}
+.vg-cell--match-active {
+  background: var(--background-warning-default, #ffd666) !important;
+  box-shadow: inset 0 0 0 2px var(--background-brand-default, #0073ea);
+}
+/* ── Color panel inside a toolbar popover ── */
+.vg-color-panel {
+  width: 236px;
+  padding: var(--spacing-02, 4px);
+}
+/* ── Decimal places control ── */
+.vg-numfmt-decimals {
+  display: inline-flex;
+  align-items: center;
+  gap: 2px;
+  flex-shrink: 0;
+  color: var(--text-default-secondary, #666);
+}
+.vg-font-size-input--narrow { width: 38px; }

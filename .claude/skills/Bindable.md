@@ -54,7 +54,7 @@ A bindable field is any `uiConfig` field whose value comes from a live device/se
 
 Bindable fields use a **plain `<input type="text">`** or the design-sdk `TextInput`. The user types the UNS topic path wrapped in `{{}}`.
 
-> **Prefer `UNSPathInput` over `TextInput` for all bindable fields.** `UNSPathInput` (from `@faclon-labs/design-sdk/UNSPathInput`) adds a `/`-triggered tree browser that resolves workspace names to `{{uns:wsId://path}}` format automatically. Only use bare `TextInput` for fields where UNS browsing is not appropriate. See **UNSPathInput.md** for the full pattern.
+> **Prefer `UNSTreePicker` over `TextInput` for all bindable fields.** `UNSTreePicker` (from `@faclon-labs/design-sdk/UNSTreePicker`, design-sdk 0.7+) browses workspace → nodes lazily and commits `{{uns:wsId://path}}` directly, so no resolve step is needed. It supersedes `UNSPathInput`, which required the whole tree upfront and emitted display names. Only use bare `TextInput` for fields where UNS browsing is not appropriate. The `:op` aggregation variants are the selectable leaves, never the bare Tag. See **DevHarness.md → UNS Injection Props** for the host contract.
 
 The placeholder must always show an example `{{topic}}` value.
 

@@ -1,0 +1,881 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://iosense.faclon.com/schemas/table-widget.json",
+  "title": "TableWidget Envelope",
+  "description": "Configuration envelope for the IOsense TableWidget. Emitted by the configurator via onChange() and consumed by the mini-engine + widget renderer.",
+  "type": "object",
+  "required": [
+    "_id",
+    "type",
+    "general",
+    "uiConfig",
+    "dynamicBindingPathList"
+  ],
+  "additionalProperties": false,
+  "$defs": {
+    "cellBorderSide": {
+      "type": "object",
+      "required": [
+        "enabled",
+        "color",
+        "style",
+        "width"
+      ],
+      "additionalProperties": false,
+      "properties": {
+        "enabled": {
+          "type": "boolean"
+        },
+        "color": {
+          "type": "string"
+        },
+        "style": {
+          "type": "string",
+          "enum": [
+            "solid",
+            "dashed",
+            "dotted"
+          ]
+        },
+        "width": {
+          "type": "integer",
+          "enum": [
+            1,
+            2,
+            3
+          ]
+        }
+      }
+    },
+    "cellFormat": {
+      "type": "object",
+      "description": "Per-cell formatting. `link` is a URL opened on click in locked/viewer mode ('' = none).",
+      "required": [
+        "bold",
+        "italic",
+        "underline",
+        "fontSize",
+        "textAlign",
+        "numberFormat",
+        "textColor",
+        "cellColor",
+        "borders"
+      ],
+      "additionalProperties": false,
+      "properties": {
+        "bold": {
+          "type": "boolean"
+        },
+        "italic": {
+          "type": "boolean"
+        },
+        "underline": {
+          "type": "boolean"
+        },
+        "fontSize": {
+          "type": "number",
+          "minimum": 1
+        },
+        "textAlign": {
+          "type": "string",
+          "enum": [
+            "left",
+            "center",
+            "right"
+          ]
+        },
+        "numberFormat": {
+          "type": "string",
+          "enum": [
+            "general",
+            "number",
+            "percent",
+            "currency",
+            "integer"
+          ]
+        },
+        "textColor": {
+          "type": "string"
+        },
+        "cellColor": {
+          "type": "string"
+        },
+        "borders": {
+          "type": "object",
+          "required": [
+            "top",
+            "right",
+            "bottom",
+            "left"
+          ],
+          "additionalProperties": false,
+          "properties": {
+            "top": {
+              "$ref": "#/$defs/cellBorderSide"
+            },
+            "right": {
+              "$ref": "#/$defs/cellBorderSide"
+            },
+            "bottom": {
+              "$ref": "#/$defs/cellBorderSide"
+            },
+            "left": {
+              "$ref": "#/$defs/cellBorderSide"
+            }
+          }
+        },
+        "link": {
+          "type": "string"
+        },
+        "decimals": {
+          "type": [
+            "integer",
+            "null"
+          ],
+          "minimum": 0,
+          "maximum": 10,
+          "description": "Per-cell decimal places. null = inherit uiConfig.dataPrecision."
+        }
+      }
+    }
+  },
+  "properties": {
+    "_id": {
+      "type": "string",
+      "description": "Unique widget instance id."
+    },
+    "type": {
+      "const": "TableWidget",
+      "description": "Widget type discriminator."
+    },
+    "general": {
+      "type": "object",
+      "required": [
+        "title"
+      ],
+      "additionalProperties": false,
+      "properties": {
+        "title": {
+          "type": "string",
+          "description": "Human-readable widget title."
+        }
+      }
+    },
+    "timeConfig": {
+      "type": "object",
+      "description": "Optional shared time-range config, present when the widget participates in dashboard-level time filtering.",
+      "required": [
+        "timezone",
+        "type",
+        "startTime",
+        "endTime",
+        "defaultDuration",
+        "allDurations",
+        "defaultPeriodicity"
+      ],
+      "additionalProperties": false,
+      "properties": {
+        "timezone": {
+          "type": "string"
+        },
+        "type": {
+          "type": "string",
+          "enum": [
+            "local",
+            "fixed"
+          ]
+        },
+        "startTime": {
+          "type": [
+            "number",
+            "null"
+          ]
+        },
+        "endTime": {
+          "type": [
+            "number",
+            "null"
+          ]
+        },
+        "defaultDuration": {
+          "type": "string"
+        },
+        "allDurations": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "required": [
+              "id",
+              "xPeriod"
+            ],
+            "additionalProperties": false,
+            "properties": {
+              "id": {
+                "type": "string"
+              },
+              "label": {
+                "type": "string"
+              },
+              "x": {
+                "type": "number"
+              },
+              "xPeriod": {
+                "type": "string"
+              }
+            }
+          }
+        },
+        "defaultPeriodicity": {
+          "type": "string",
+          "enum": [
+            "minute",
+            "hourly",
+            "daily",
+            "weekly",
+            "monthly"
+          ]
+        }
+      }
+    },
+    "uiConfig": {
+      "type": "object",
+      "description": "Render configuration for the table grid.",
+      "required": [
+        "title",
+        "rows",
+        "columns",
+        "freezeRows",
+        "freezeColumns",
+        "widgetWidth",
+        "widgetHeight",
+        "locked",
+        "conditionalRules",
+        "cellBindings",
+        "seriesBindings",
+        "style"
+      ],
+      "additionalProperties": false,
+      "properties": {
+        "title": {
+          "type": "string",
+          "description": "Table title shown in the card header."
+        },
+        "rows": {
+          "type": "integer",
+          "minimum": 1,
+          "description": "Total grid rows."
+        },
+        "columns": {
+          "type": "integer",
+          "minimum": 1,
+          "description": "Total grid columns."
+        },
+        "freezeRows": {
+          "type": "integer",
+          "minimum": 0,
+          "description": "Number of leading rows frozen during scroll."
+        },
+        "freezeColumns": {
+          "type": "integer",
+          "minimum": 0,
+          "description": "Number of leading columns frozen during scroll."
+        },
+        "widgetWidth": {
+          "type": "number",
+          "minimum": 0,
+          "description": "Widget width in px."
+        },
+        "widgetHeight": {
+          "type": "number",
+          "minimum": 0,
+          "description": "Widget height in px."
+        },
+        "locked": {
+          "type": "boolean",
+          "description": "Prevents editing cells, resizing, and adding/removing rows or columns.",
+          "default": false
+        },
+        "conditionalRules": {
+          "type": "array",
+          "description": "Conditional formatting rules evaluated top-to-bottom; later rules win on overlap.",
+          "items": {
+            "type": "object",
+            "required": [
+              "id",
+              "enabled",
+              "range",
+              "condition",
+              "value1",
+              "value2",
+              "format"
+            ],
+            "additionalProperties": false,
+            "properties": {
+              "id": {
+                "type": "string"
+              },
+              "enabled": {
+                "type": "boolean"
+              },
+              "range": {
+                "description": "Cell range the rule applies to; null = all cells.",
+                "oneOf": [
+                  {
+                    "type": "object",
+                    "required": [
+                      "startRow",
+                      "startCol",
+                      "endRow",
+                      "endCol"
+                    ],
+                    "additionalProperties": false,
+                    "properties": {
+                      "startRow": {
+                        "type": "integer",
+                        "minimum": 0
+                      },
+                      "startCol": {
+                        "type": "integer",
+                        "minimum": 0
+                      },
+                      "endRow": {
+                        "type": "integer",
+                        "minimum": 0
+                      },
+                      "endCol": {
+                        "type": "integer",
+                        "minimum": 0
+                      }
+                    }
+                  },
+                  {
+                    "type": "null"
+                  }
+                ]
+              },
+              "condition": {
+                "type": "string",
+                "enum": [
+                  "greaterThan",
+                  "lessThan",
+                  "greaterThanOrEqual",
+                  "lessThanOrEqual",
+                  "equalTo",
+                  "notEqualTo",
+                  "between",
+                  "contains",
+                  "isEmpty",
+                  "isNotEmpty"
+                ]
+              },
+              "value1": {
+                "type": "string"
+              },
+              "value2": {
+                "type": "string"
+              },
+              "format": {
+                "type": "object",
+                "additionalProperties": false,
+                "properties": {
+                  "cellColor": {
+                    "type": "string"
+                  },
+                  "textColor": {
+                    "type": "string"
+                  },
+                  "bold": {
+                    "type": "boolean"
+                  },
+                  "italic": {
+                    "type": "boolean"
+                  }
+                }
+              }
+            }
+          }
+        },
+        "cellBindings": {
+          "type": "array",
+          "description": "Single-cell bindings. Bindable \u2014 topic stored wrapped as \"{{uns:wsId://path}}\".",
+          "items": {
+            "type": "object",
+            "required": [
+              "cellId",
+              "topic"
+            ],
+            "additionalProperties": false,
+            "properties": {
+              "cellId": {
+                "type": "string",
+                "pattern": "^R\\d+C\\d+$",
+                "description": "Zero-indexed grid cell, e.g. \"R0C2\"."
+              },
+              "topic": {
+                "type": "string",
+                "description": "Mapped UNS path, e.g. \"{{uns:wsId://path}}\"."
+              }
+            }
+          }
+        },
+        "seriesBindings": {
+          "type": "array",
+          "description": "Series bindings: a base cell bound to a topic resolving to an array, spilled across cells at runtime.",
+          "items": {
+            "type": "object",
+            "required": [
+              "id",
+              "baseCellId",
+              "topic",
+              "direction",
+              "limit"
+            ],
+            "additionalProperties": false,
+            "properties": {
+              "id": {
+                "type": "string"
+              },
+              "baseCellId": {
+                "type": "string",
+                "pattern": "^R\\d+C\\d+$",
+                "description": "Zero-indexed anchor cell."
+              },
+              "topic": {
+                "type": "string",
+                "description": "Mapped UNS path resolving to an array, e.g. \"{{uns:wsId://path}}\"."
+              },
+              "direction": {
+                "type": "string",
+                "enum": [
+                  "horizontal",
+                  "vertical"
+                ],
+                "description": "Layout direction from the base cell."
+              },
+              "limit": {
+                "type": "integer",
+                "minimum": 0,
+                "description": "Max cells to fill; 0 = no cap (fill whole array)."
+              }
+            }
+          }
+        },
+        "rowFilter": {
+          "type": "object",
+          "description": "Status-filter chips/dropdown over one column: rows whose cell in `colIndex` (within startRow..endRow) matches a filter's name can be counted, tinted, and non-matching rows hidden.",
+          "required": [
+            "colIndex",
+            "startRow",
+            "endRow",
+            "range",
+            "filterType",
+            "enableCount",
+            "hideNonMatching",
+            "enableColor",
+            "filters"
+          ],
+          "additionalProperties": false,
+          "properties": {
+            "colIndex": {
+              "type": [
+                "integer",
+                "null"
+              ],
+              "minimum": 0,
+              "description": "0-based filtered column; null = not configured."
+            },
+            "startRow": {
+              "type": [
+                "integer",
+                "null"
+              ],
+              "minimum": 0,
+              "description": "0-based inclusive first row of the filtered range."
+            },
+            "endRow": {
+              "type": [
+                "integer",
+                "null"
+              ],
+              "minimum": 0,
+              "description": "0-based inclusive last row of the filtered range."
+            },
+            "range": {
+              "type": "string",
+              "description": "Raw A1-style range text shown in the configurator input, e.g. \"A2:A10\"."
+            },
+            "filterType": {
+              "type": "string",
+              "enum": [
+                "chips",
+                "dropdown"
+              ]
+            },
+            "enableCount": {
+              "type": "boolean",
+              "description": "Show per-filter match counts on the chips/options."
+            },
+            "hideNonMatching": {
+              "type": "boolean",
+              "description": "Hide rows not matched by any active filter."
+            },
+            "enableColor": {
+              "type": "boolean",
+              "description": "Tint matched rows with the filter's color."
+            },
+            "filters": {
+              "type": "array",
+              "items": {
+                "type": "object",
+                "required": [
+                  "id",
+                  "name",
+                  "color",
+                  "icon"
+                ],
+                "additionalProperties": false,
+                "properties": {
+                  "id": {
+                    "type": "string"
+                  },
+                  "name": {
+                    "type": "string"
+                  },
+                  "color": {
+                    "type": "string"
+                  },
+                  "icon": {
+                    "type": "string",
+                    "description": "Key into the curated icon registry (rowFilter.ts)."
+                  }
+                }
+              }
+            }
+          }
+        },
+        "cells": {
+          "type": "object",
+          "description": "Sparse persisted cell content + formatting, keyed \"R{r}C{c}\". Holds manual text and non-default formats; values of bound/series cells are runtime data and are never stored here. Hydrated into the widget's cell store on mount; re-emitted via CONFIG_CHANGE on canvas edits.",
+          "additionalProperties": false,
+          "patternProperties": {
+            "^R\\d+C\\d+$": {
+              "type": "object",
+              "additionalProperties": false,
+              "properties": {
+                "value": {
+                  "type": "string"
+                },
+                "format": {
+                  "$ref": "#/$defs/cellFormat"
+                }
+              }
+            }
+          }
+        },
+        "columnWidths": {
+          "type": "array",
+          "description": "Per-column widths in px, index = column. Missing entries use the default width; [] = all defaults.",
+          "items": {
+            "type": "number",
+            "minimum": 0
+          }
+        },
+        "rowHeights": {
+          "type": "array",
+          "description": "Per-row heights in px, index = row. Same fallback rules as columnWidths.",
+          "items": {
+            "type": "number",
+            "minimum": 0
+          }
+        },
+        "style": {
+          "type": "object",
+          "required": [
+            "card",
+            "title",
+            "tableBorderStyle",
+            "showExportButton"
+          ],
+          "additionalProperties": false,
+          "properties": {
+            "card": {
+              "type": "object",
+              "required": [
+                "wrapInCard",
+                "bg",
+                "borderColor",
+                "borderWidth",
+                "borderRadius",
+                "padding"
+              ],
+              "additionalProperties": false,
+              "properties": {
+                "wrapInCard": {
+                  "type": "boolean"
+                },
+                "bg": {
+                  "type": "string"
+                },
+                "borderColor": {
+                  "type": "string"
+                },
+                "borderWidth": {
+                  "type": "integer",
+                  "enum": [
+                    1,
+                    2,
+                    3
+                  ]
+                },
+                "borderRadius": {
+                  "type": "number",
+                  "minimum": 0
+                },
+                "padding": {
+                  "type": "number",
+                  "minimum": 0
+                }
+              }
+            },
+            "title": {
+              "type": "object",
+              "required": [
+                "color",
+                "fontSize",
+                "fontWeight"
+              ],
+              "additionalProperties": false,
+              "properties": {
+                "color": {
+                  "type": "string"
+                },
+                "fontSize": {
+                  "type": "number",
+                  "minimum": 0
+                },
+                "fontWeight": {
+                  "type": "string",
+                  "enum": [
+                    "regular",
+                    "medium",
+                    "bold"
+                  ]
+                },
+                "align": {
+                  "type": "string",
+                  "enum": [
+                    "left",
+                    "center",
+                    "right"
+                  ],
+                  "description": "Title alignment inside the widget header. Defaults to 'left'."
+                }
+              }
+            },
+            "tableBorderStyle": {
+              "type": "string",
+              "enum": [
+                "none",
+                "all",
+                "rows",
+                "columns"
+              ]
+            },
+            "showExportButton": {
+              "type": "boolean"
+            },
+            "showSearch": {
+              "type": "boolean",
+              "description": "Show the in-table search field in the widget header. Defaults to false."
+            }
+          }
+        },
+        "dataPrecision": {
+          "type": [
+            "integer",
+            "null"
+          ],
+          "minimum": 0,
+          "maximum": 10,
+          "description": "Default decimal places for numeric cell values. null = render the resolved number untouched. A cell's own format.decimals overrides it. Defaults to 2 when absent."
+        },
+        "timeDisplay": {
+          "type": "string",
+          "enum": [
+            "local",
+            "utc"
+          ],
+          "description": "Clock used for series buckets and their labels. 'local' follows the viewer's browser timezone; 'utc' is the platform's global time. Defaults to 'local' when absent."
+        }
+      }
+    },
+    "dynamicBindingPathList": {
+      "type": "array",
+      "description": "Bindings extracted from cellBindings and seriesBindings. Built by buildDynamicBindingPathList(uiConfig) before every onChange(). Series keys are prefixed \"series:\".",
+      "items": {
+        "type": "object",
+        "required": [
+          "key",
+          "topic"
+        ],
+        "additionalProperties": false,
+        "properties": {
+          "key": {
+            "type": "string",
+            "description": "cellId for single bindings (e.g. \"R0C2\"), or \"series:<baseCellId>\" for series bindings."
+          },
+          "topic": {
+            "type": "string",
+            "description": "Bare UNS topic extracted from the stored {{...}} value."
+          },
+          "type": {
+            "const": "series",
+            "description": "Present only on series-binding entries; tells resolveAndCompute to return bucketed slots instead of collapsing to one value."
+          }
+        }
+      }
+    }
+  },
+  "examples": [
+    {
+      "_id": "tbl_001",
+      "type": "TableWidget",
+      "general": {
+        "title": "Line 1 Shift Summary"
+      },
+      "uiConfig": {
+        "title": "Shift Summary",
+        "rows": 3,
+        "columns": 3,
+        "freezeRows": 1,
+        "freezeColumns": 0,
+        "widgetWidth": 480,
+        "widgetHeight": 240,
+        "locked": false,
+        "conditionalRules": [
+          {
+            "id": "rule_1",
+            "enabled": true,
+            "range": null,
+            "condition": "lessThan",
+            "value1": "50",
+            "value2": "",
+            "format": {
+              "cellColor": "#ffe0e0",
+              "textColor": "#a00000"
+            }
+          }
+        ],
+        "cellBindings": [
+          {
+            "cellId": "R1C1",
+            "topic": "{{uns:wsA://plantA/line1/oee}}"
+          }
+        ],
+        "seriesBindings": [
+          {
+            "id": "series_1",
+            "baseCellId": "R1C2",
+            "topic": "{{uns:wsA://plantA/line1/hourly_output}}",
+            "direction": "horizontal",
+            "limit": 0
+          }
+        ],
+        "rowFilter": {
+          "colIndex": 2,
+          "startRow": 1,
+          "endRow": 2,
+          "range": "C2:C3",
+          "filterType": "chips",
+          "enableCount": true,
+          "hideNonMatching": true,
+          "enableColor": false,
+          "filters": [
+            {
+              "id": "flt_1",
+              "name": "Running",
+              "color": "#00854d",
+              "icon": "Activity"
+            }
+          ]
+        },
+        "cells": {
+          "R0C0": {
+            "value": "Machine",
+            "format": {
+              "bold": true,
+              "italic": false,
+              "underline": false,
+              "fontSize": 13,
+              "textAlign": "center",
+              "numberFormat": "general",
+              "textColor": "#ffffff",
+              "cellColor": "#323338",
+              "borders": {
+                "top": {
+                  "enabled": false,
+                  "color": "#cccccc",
+                  "style": "solid",
+                  "width": 1
+                },
+                "right": {
+                  "enabled": false,
+                  "color": "#cccccc",
+                  "style": "solid",
+                  "width": 1
+                },
+                "bottom": {
+                  "enabled": false,
+                  "color": "#cccccc",
+                  "style": "solid",
+                  "width": 1
+                },
+                "left": {
+                  "enabled": false,
+                  "color": "#cccccc",
+                  "style": "solid",
+                  "width": 1
+                }
+              },
+              "link": "https://example.com/machine-a"
+            }
+          }
+        },
+        "columnWidths": [
+          140,
+          100,
+          100
+        ],
+        "rowHeights": [],
+        "style": {
+          "card": {
+            "wrapInCard": true,
+            "bg": "#ffffff",
+            "borderColor": "#e0e0e0",
+            "borderWidth": 1,
+            "borderRadius": 8,
+            "padding": 12
+          },
+          "title": {
+            "color": "#1a1a1a",
+            "fontSize": 14,
+            "fontWeight": "medium"
+          },
+          "tableBorderStyle": "all",
+          "showExportButton": true
+        }
+      },
+      "dynamicBindingPathList": [
+        {
+          "key": "R1C1",
+          "topic": "plantA/line1/oee"
+        },
+        {
+          "key": "series:R1C2",
+          "topic": "plantA/line1/hourly_output",
+          "type": "series"
+        }
+      ]
+    }
+  ]
+}

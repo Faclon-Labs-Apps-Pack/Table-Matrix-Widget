@@ -1,7 +1,10 @@
 .tw-widget {
   display: flex;
   flex-direction: column;
+  /* height comes from the configured widget size (inline), falling back to the
+     host container when that is smaller — see cardInlineStyle. */
   height: 100%;
+  box-sizing: border-box;
   background: var(--background-default-intense, #fff);
   border: 1px solid var(--fds-border-subtle, #eee);
   overflow: hidden;
@@ -15,7 +18,11 @@
   flex-shrink: 0;
 }
 
+/* The title takes the free width so its own text-align (left/center/right from
+   the configurator) positions it inside the bar, with the actions pinned right. */
 .tw-title {
+  flex: 1;
+  min-width: 0;
   margin: 0;
   font-size: 15px;
   font-weight: 600;
@@ -24,7 +31,36 @@
 }
 
 .tw-topbar__actions {
+  display: flex;
+  align-items: center;
+  gap: var(--spacing-02, 6px);
   margin-left: auto;
+  flex-shrink: 0;
+}
+
+/* ── In-table search ── */
+.tw-search {
+  display: flex;
+  align-items: center;
+  gap: var(--spacing-02, 6px);
+}
+
+.tw-search .fds-search-input,
+.tw-search input {
+  min-width: 150px;
+}
+
+.tw-search__nav {
+  display: flex;
+  align-items: center;
+  gap: 2px;
+}
+
+.tw-search__count {
+  font-size: 11px;
+  color: var(--text-default-secondary, #666);
+  min-width: 34px;
+  text-align: right;
 }
 
 .tw-table-section {

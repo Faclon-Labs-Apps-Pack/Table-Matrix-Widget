@@ -65,7 +65,6 @@ Apply the ref to the configurator root:
 
 ```tsx
 <Modal
-  {...({ transparent: true } as any)}              // transparent backdrop (undocumented runtime prop)
   isOpen={isOpen}
   positionX={modalX}
   positionY={modalY}
@@ -111,7 +110,6 @@ import { Button } from '@faclon-labs/design-sdk/Button';
 
 ### Rules
 
-- `transparent: true` is not in the `.d.ts` — always cast via `{...({ transparent: true } as any)}`.
-- `positionX` / `positionY` are viewport-absolute px values — always derive from `getBoundingClientRect()`.
+- `positionX` / `positionY` are viewport-absolute px values — always derive from `getBoundingClientRect()`. Since design-sdk 0.7.30, providing both automatically makes the backdrop transparent (the old `transparent: true` cast is gone from the runtime — do not use it).
 - `e.stopPropagation()` on every trigger that lives inside an accordion header or other click handler.
 - Reset all form state in `handleClose` **and** at the end of `handleSubmit`.

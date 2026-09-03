@@ -1,14 +1,17 @@
 import { useRef, useEffect, useMemo, useState } from 'react';
-import { Button, TextInput, CounterInput, Chip, Checkbox, Popover, PopoverBody } from '@faclon-labs/design-sdk';
+import { Button, TextInput, CounterInput, Chip, Checkbox, Popover, PopoverBody, UNSTreePicker, SearchInput } from '@faclon-labs/design-sdk';
 import { Modal, ModalHeader, ModalBody, ModalFooter } from '@faclon-labs/design-sdk/Modal';
-import { UNSPathInput } from '@faclon-labs/design-sdk/UNSPathInput';
-import { Download, ArrowDown, ArrowRight, Trash2, Filter } from 'react-feather';
-import { DataEntry, DataValue, WidgetEvent, SeriesDirection } from '../../iosense-sdk/types';
+import type { UNSNode, UNSWorkspace } from '@faclon-labs/design-sdk/UNSTreePicker';
+import { Download, ArrowDown, ArrowRight, Trash2, Filter, ChevronUp, ChevronDown } from 'react-feather';
+import { DataEntry, WidgetEvent, SeriesDirection, PersistedCell, TableWidgetUIConfig } from '../../iosense-sdk/types';
 import { PartialTableWidgetUIConfig, withTableWidgetDefaults } from '../../iosense-sdk/defaults';
-import type { UNSTree } from '../../iosense-sdk/useUNSTree';
-import { CellDataStore, CellId } from './CellDataStore';
-import { VirtualGrid } from './VirtualGrid';
-import { computeBoundCells, seriesPreviewCells } from './bindingMap';
+import { useUNSTreePicker } from '../../iosense-sdk/useUNSTreePicker';
+import { useZoneIgnorePortals } from '../../iosense-sdk/zoneIgnorePortals';
+import { buildDynamicBindingPathList } from '../../iosense-sdk/bindings';
+import { CellDataStore, CellId, isDefaultFormat } from './CellDataStore';
+import { VirtualGrid, GridGeometry } from './VirtualGrid';
+import { computeBoundCells, seriesPreviewCells, remapForGridMutation, GridMutation, RemappableConfig } from './bindingMap';
+import { getDisplayValue, cellIdToRef } from './formulaEngine';
 import { ROW_FILTER_ICONS, computeFilterInstances, computeRowFilterVisibility, hexToRgba } from './rowFilter';
 import './TableWidget.css';
 
@@ -21,23 +24,79 @@ function scalarToString(value: unknown): string {
   return value != null ? String(value) : '';
 }
 
-// Coerce a resolved series value into an array. The resolveAndCompute API may
-// return a real array, a JSON-encoded array string, or a comma-separated string.
-function toArray(value: DataValue): Array<string | number | boolean | null> {
-  if (Array.isArray(value)) return value;
+// The `data` prop as an array, whatever shape the host handed over. The dev
+// mini-engine always passes DataEntry[], but a host engine may pass the
+// resolve result keyed by binding key ({ "series:R1C0": { … } }) — iterating
+// that with for..of throws, which would take the whole widget down rather than
+// just leaving the cells empty.
+function toEntries(data: unknown): DataEntry[] {
+  if (Array.isArray(data)) return data as DataEntry[];
+  if (data && typeof data === 'object') {
+    return Object.entries(data as Record<string, unknown>).map(([key, value]) => {
+      const v = value as { key?: string; value?: unknown; slots?: unknown };
+      return (v && typeof v === 'object' && ('value' in v || 'slots' in v)
+        ? { ...(v as object), key }
+        : { key, value }) as DataEntry;
+    });
+  }
+  return [];
+}
+
+type SeriesPoint = string | number | boolean | null;
+
+// The ordered data points a series binding lays out across cells.
+//
+// `slots` on the DataEntry is the authoritative source when present — that's the
+// bucketed series row (`{ from, to, label, value, quality }` per bucket) the
+// mini-engine carries through. A `quality: 'no_data'` bucket has `value: null`
+// and stays in the list so the points keep their position on the time axis; it
+// just lands as an empty cell.
+function toSeriesPoints(entry: DataEntry): SeriesPoint[] {
+  if (entry.slots) return entry.slots.map((slot) => slot.value);
+  return toPoints(entry.value);
+}
+
+// Coerce whatever a series binding resolved to into a flat point list. The
+// mini-engine already flattens a slots row to an array of slot values, but a
+// host engine may hand the raw resolve row straight through — the whole
+// `{ key, path, meta, range, slots: [...] }` object, or a bare array of slot
+// objects — and a topic may still resolve to a JSON-encoded array or a
+// comma-separated string. Every one of those has to reduce to the same list.
+function toPoints(value: unknown): SeriesPoint[] {
+  if (Array.isArray(value)) return value.map(unwrapPoint);
+
   if (typeof value === 'string') {
     const t = value.trim();
     if (t === '') return [];
-    if (t.startsWith('[')) {
+    if (t.startsWith('[') || t.startsWith('{')) {
       try {
-        const parsed = JSON.parse(t);
-        if (Array.isArray(parsed)) return parsed;
-      } catch { /* fall through to CSV split */ }
+        return toPoints(JSON.parse(t));
+      } catch { /* not JSON — fall through to CSV split */ }
     }
     return t.split(',').map((s) => s.trim());
   }
+
   if (value == null) return [];
-  return [value];
+
+  // A resolve row (or any wrapper) handed through unflattened: dig out the
+  // bucket array and unwrap each bucket to its value.
+  if (typeof value === 'object') {
+    const obj = value as Record<string, unknown>;
+    for (const key of ['slots', 'values', 'points', 'data']) {
+      if (Array.isArray(obj[key])) return (obj[key] as unknown[]).map(unwrapPoint);
+    }
+    return 'value' in obj ? [unwrapPoint(obj)] : [];
+  }
+
+  return [value as SeriesPoint];
+}
+
+// One point, from either a scalar or a `{ ..., value }` bucket object.
+function unwrapPoint(v: unknown): SeriesPoint {
+  if (v !== null && typeof v === 'object' && 'value' in (v as object)) {
+    return (v as { value: SeriesPoint }).value;
+  }
+  return v as SeriesPoint;
 }
 
 interface TableWidgetProps {
@@ -53,13 +112,16 @@ interface TableWidgetProps {
   /** UNS topic-browser injection for the Cell Config popover. When absent the
    *  popover falls back to a plain text field (paste a topic). Same contract the
    *  configurator uses; the host provides these. */
-  unsTree?: UNSTree;
-  isLoadingTree?: boolean;
-  onLoadWorkspaces?: () => void | Promise<void>;
-  resolveUNSValue?: (raw: string) => string;
+  unsWorkspaces?: UNSWorkspace[];
+  isLoadingWorkspaces?: boolean;
+  loadUnsChildren?: (wsId: string, parentId?: string) => Promise<UNSNode[]>;
+  searchUnsNodes?: (wsId: string, query: string, limit?: number) => Promise<UNSNode[]>;
+  /** Bearer token used only when the host injects no UNS source (dev harness). */
+  authentication?: string;
 }
 
-export function TableWidget({ config, data, onEvent, editable = false, unsTree, isLoadingTree, onLoadWorkspaces, resolveUNSValue }: TableWidgetProps) {
+export function TableWidget(props: TableWidgetProps) {
+  const { config, data, onEvent, editable = false, unsWorkspaces, isLoadingWorkspaces, loadUnsChildren, searchUnsNodes, authentication } = props;
   const storeRef = useRef<CellDataStore | null>(null);
   if (storeRef.current === null) {
     storeRef.current = new CellDataStore();
@@ -75,52 +137,152 @@ export function TableWidget({ config, data, onEvent, editable = false, unsTree, 
   // key read below is guaranteed present — no `config.style` / `config.title` crashes.
   const cfg = useMemo(() => withTableWidgetDefaults(config), [config]);
 
+  // ── Persistence: hydrate the store from uiConfig.cells ─────────────────────
+  // Runs before the data-injection effect below (declaration order), so on
+  // mount persisted manual values/formats load first and live UNS values then
+  // overwrite bound cells. Skips the round-trip of our own CONFIG_CHANGE emit —
+  // hydrating there would clobber edits made while the host was persisting.
+  const lastEmittedCellsJsonRef = useRef<string | null>(null);
+  const [hydrateTick, setHydrateTick] = useState(0);
+  const cellsDroppedWarnedRef = useRef(false);
+  useEffect(() => {
+    const json = JSON.stringify(cfg.cells);
+    if (json === lastEmittedCellsJsonRef.current) return;
+
+    // A host that persists the envelope but not `uiConfig.cells` (a schema
+    // without the key, a save path that only keeps the fields its own form
+    // owns) hands the round-trip back with cells empty. Hydrating that would
+    // clear every cell the operator just typed — the edit looks accepted, then
+    // vanishes on the next config push. Treat "we emitted content, the host
+    // returned none" as a non-persisting host and keep what is on screen.
+    const incomingEmpty = Object.keys(cfg.cells).length === 0;
+    const weHadContent = (lastEmittedCellsJsonRef.current ?? '{}') !== '{}';
+    if (incomingEmpty && weHadContent) {
+      if (!cellsDroppedWarnedRef.current) {
+        cellsDroppedWarnedRef.current = true;
+        console.warn(
+          '[TableWidget] the host returned uiConfig.cells empty after this widget emitted cell content — ' +
+          'keeping on-screen cells. Manual cell text will not survive a reload until the host persists uiConfig.cells.',
+        );
+      }
+      return;
+    }
+
+    lastEmittedCellsJsonRef.current = json;
+    // Full replace (hydrate clears first) so externally-removed cells actually
+    // disappear; bumping hydrateTick re-runs the data effect below, which
+    // re-injects live bound/series values the clear just wiped.
+    storeRef.current!.hydrate(cfg.cells);
+    setHydrateTick((t) => t + 1);
+  }, [cfg.cells]);
+
   // Inject every UNS-resolved binding into the store in ONE batch → a single
   // notifyAll → a single grid re-render, regardless of how many cells the data
   // touches. Single-cell bindings (key = "R{r}C{c}") write straight through;
   // series bindings (key = "series:R{r}C{c}") expand an array across cells from
   // the base cell in the configured direction. Keeping all writes in one
   // setValues call is what keeps INP well under 50 ms even for large series.
+  //
+  // dataFilledRef tracks EVERY cell whose value came from the data prop (single
+  // and series alike): serializeCells uses it to keep live readings out of the
+  // persisted uiConfig.cells, and the stale-blank loop below uses it to clear
+  // cells a removed/re-laid-out binding no longer covers.
+  const dataFilledRef = useRef<Set<CellId>>(new Set());
+
+  // Read at render time (not captured), so it reflects the latest resolve even
+  // when only the grid re-rendered. boundCells covers a binding whose value has
+  // not landed yet; dataFilledRef covers every cell a series actually filled.
+  const isDataCell = (cellId: CellId) =>
+    dataFilledRef.current.has(cellId) || boundCellsRef.current.has(cellId);
+
   useEffect(() => {
     console.log('[TableWidget] data received', data);
     const store = storeRef.current;
-    if (!store || !data || data.length === 0) return;
+    if (!store) return;
 
     const batch: Array<{ cellId: CellId; value: string }> = [];
+    const filled = new Set<CellId>();
 
-    for (const { key, value } of data) {
+    for (const entry of toEntries(data)) {
+      const key = String(entry?.key ?? '');
       if (/^R\d+C\d+$/.test(key)) {
         // Single-cell binding — DataEntry.key is already the target cellId.
-        batch.push({ cellId: key as CellId, value: scalarToString(value) });
+        filled.add(key as CellId);
+        batch.push({ cellId: key as CellId, value: scalarToString(entry.value) });
         continue;
       }
-      if (key.startsWith('series:')) {
-        const baseCellId = key.slice('series:'.length);
-        const series = cfg.seriesBindings.find((s) => s.baseCellId === baseCellId);
-        const m = /^R(\d+)C(\d+)$/.exec(baseCellId);
-        if (!series || !m) continue;
-        const r0 = parseInt(m[1], 10);
-        const c0 = parseInt(m[2], 10);
-        const arr = toArray(value);
-        const count = series.limit > 0 ? Math.min(series.limit, arr.length) : arr.length;
-        for (let i = 0; i < count; i++) {
-          const cellId = (series.direction === 'horizontal'
-            ? `R${r0}C${c0 + i}`
-            : `R${r0 + i}C${c0}`) as CellId;
-          batch.push({ cellId, value: scalarToString(arr[i]) });
-        }
+      if (!key.startsWith('series:')) continue;
+
+      const baseCellId = key.slice('series:'.length).trim();
+      const series = cfg.seriesBindings.find((s) => s.baseCellId === baseCellId);
+      const m = /^R(\d+)C(\d+)$/.exec(baseCellId);
+      if (!series || !m) {
+        console.warn(
+          `[TableWidget] series row "${key}" has no matching series binding`,
+          { baseCellId, configured: cfg.seriesBindings.map((s) => s.baseCellId) },
+        );
+        continue;
+      }
+
+      const r0 = parseInt(m[1], 10);
+      const c0 = parseInt(m[2], 10);
+      const points = toSeriesPoints(entry);
+      // Max-cells cap; limit 0 means "fill with every point the topic returned".
+      const count = series.limit > 0 ? Math.min(series.limit, points.length) : points.length;
+
+      let written = 0;
+      for (let i = 0; i < count; i++) {
+        const r = series.direction === 'vertical'   ? r0 + i : r0;
+        const c = series.direction === 'horizontal' ? c0 + i : c0;
+        // Never write past the configured grid — those cells are never rendered,
+        // so the values would sit invisible in the store and reappear as ghosts
+        // the moment the user grows the table.
+        if (r >= cfg.rows || c >= cfg.columns) break;
+        const cellId = `R${r}C${c}` as CellId;
+        filled.add(cellId);
+        batch.push({ cellId, value: scalarToString(points[i]) });
+        written++;
+      }
+      // Silent truncation is the single most confusing thing a series can do:
+      // 24 hourly buckets into a 10-row table shows 9 numbers and drops 15 with
+      // no clue why. Say so — the configurator shows the same span up front.
+      if (written < points.length) {
+        console.warn(
+          `[TableWidget] series "${cellIdToRef(baseCellId)}" resolved ${points.length} points but only ${written} fit ` +
+          `(${series.direction === 'vertical' ? 'rows' : 'columns'} available from ${cellIdToRef(baseCellId)}` +
+          `${series.limit > 0 ? `, max cells ${series.limit}` : ''}). Grow the grid or lower the point count.`,
+        );
       }
     }
 
+    // Blank the cells the previous resolve filled but this one no longer covers.
+    // Without this, flipping Down↔Across leaves an L of stale values, lowering
+    // the cap (or a shorter array) leaves a tail behind, and a cleared binding
+    // leaves its last live reading on screen — which the persistence pass would
+    // then freeze into uiConfig.cells as if it were manual content.
+    for (const cellId of dataFilledRef.current) {
+      if (!filled.has(cellId)) batch.push({ cellId, value: '' });
+    }
+    dataFilledRef.current = filled;
+
     if (batch.length > 0) store.setValues(batch);
-  }, [data, cfg.seriesBindings]);
+    // hydrateTick: re-inject after an external cells hydration cleared the store.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [data, cfg.seriesBindings, cfg.rows, cfg.columns, hydrateTick]);
 
   // ── Row Filter ──────────────────────────────────────────────────────────────
   // Filter instances read already-resolved cell text straight out of the store,
   // so they must recompute on ANY cell change — live UNS pushes (above) and
-  // manual edits alike — not just when the `data` prop changes.
+  // manual edits alike — not just when the `data` prop changes. The
+  // subscription exists ONLY while a filter is actually configured: for the
+  // common no-filter table it would otherwise re-render the whole widget on
+  // every keystroke and data push for nothing.
+  const rowFilterConfigured = cfg.rowFilter.filters.length > 0 && cfg.rowFilter.colIndex !== null;
   const [filterTick, setFilterTick] = useState(0);
-  useEffect(() => storeRef.current!.subscribe(() => setFilterTick((t) => t + 1)), []);
+  useEffect(() => {
+    if (!rowFilterConfigured) return;
+    return storeRef.current!.subscribe(() => setFilterTick((t) => t + 1));
+  }, [rowFilterConfigured]);
 
   const filterInstances = useMemo(
     () => computeFilterInstances(cfg.rowFilter, storeRef.current!),
@@ -159,8 +321,98 @@ export function TableWidget({ config, data, onEvent, editable = false, unsTree, 
     onEvent({ type: 'FILTER_CHANGE', payload: { action: 'rowFilter', activeFilterIds: [...next] } });
   }
 
+  // Same precision rule the grid renders with, so search and CSV export show
+  // exactly what is on screen.
+  const precisionFor = (cellId: CellId): number | null =>
+    isDataCell(cellId) ? cfg.dataPrecision : null;
+
+  // ── In-table search ─────────────────────────────────────────────────────────
+  // Matches are read from the store (display values, so a formula matches on
+  // its result and a formatted number on what the operator actually sees), so
+  // the subscription only exists while a query is active — the same
+  // pay-for-what-you-use rule the row filter follows.
+  const [searchQuery, setSearchQuery] = useState('');
+  const [searchTick, setSearchTick] = useState(0);
+  const searchActive = cfg.style.showSearch && searchQuery.trim() !== '';
+  useEffect(() => {
+    if (!searchActive) return;
+    return storeRef.current!.subscribe(() => setSearchTick((t) => t + 1));
+  }, [searchActive]);
+
+  const searchHits = useMemo<CellId[]>(() => {
+    const q = searchQuery.trim().toLowerCase();
+    if (!cfg.style.showSearch || q === '') return [];
+    const store = storeRef.current!;
+    const hits: CellId[] = [];
+    for (let r = 0; r < cfg.rows; r++) {
+      if (filterVisibility.hiddenRows.has(r)) continue;
+      for (let c = 0; c < cfg.columns; c++) {
+        const id = `R${r}C${c}` as CellId;
+        if (getDisplayValue(id, store, precisionFor(id)).toLowerCase().includes(q)) hits.push(id);
+      }
+    }
+    return hits;
+    // searchTick is an intentional recompute trigger, not a value dependency.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [searchQuery, cfg.style.showSearch, cfg.rows, cfg.columns, cfg.dataPrecision, filterVisibility.hiddenRows, searchTick]);
+
+  const [hitCursor, setHitCursor] = useState(0);
+  // A changed query (or changed data) invalidates the old position.
+  useEffect(() => { setHitCursor(0); }, [searchQuery]);
+  const activeHit = searchHits.length > 0 ? searchHits[hitCursor % searchHits.length] ?? null : null;
+  const searchMatchSet = useMemo(() => new Set(searchHits), [searchHits]);
+
+  function stepHit(delta: number) {
+    if (searchHits.length === 0) return;
+    setHitCursor((i) => (i + delta + searchHits.length) % searchHits.length);
+  }
+
+  // Export what the operator sees: display values (formulas evaluated, number
+  // formats and precision applied), rows hidden by the active filter skipped.
+  // Pure client-side file generation from the store — no fetching.
+  function buildCsv(): string {
+    const rows = geoRef.current?.rows ?? cfg.rows;
+    const columns = geoRef.current?.columns ?? cfg.columns;
+    const store = storeRef.current!;
+    const escapeCsv = (v: string) => (/[",\n]/.test(v) ? `"${v.replace(/"/g, '""')}"` : v);
+    const lines: string[] = [];
+    for (let r = 0; r < rows; r++) {
+      if (filterVisibility.hiddenRows.has(r)) continue;
+      const cols: string[] = [];
+      for (let c = 0; c < columns; c++) {
+        cols.push(escapeCsv(getDisplayValue(`R${r}C${c}`, store, precisionFor(`R${r}C${c}`))));
+      }
+      lines.push(cols.join(','));
+    }
+    return lines.join('\r\n');
+  }
+
   function handleExport() {
-    onEvent({ type: 'FILTER_CHANGE', payload: { action: 'export' } });
+    const csv = buildCsv();
+    const fileName = `${(cfg.title.trim() || 'table').replace(/[\\/:*?"<>|]/g, '_')}.csv`;
+    let downloaded = false;
+    try {
+      // BOM so Excel opens UTF-8 content correctly.
+      const blob = new Blob(['\uFEFF' + csv], { type: 'text/csv;charset=utf-8' });
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement('a');
+      a.href = url;
+      a.download = fileName;
+      a.rel = 'noopener';
+      a.style.display = 'none';
+      document.body.appendChild(a);
+      a.click();
+      // Revoking synchronously after click() aborts the download in Firefox and
+      // Safari — the browser has not read the blob out of the object URL yet.
+      setTimeout(() => { a.remove(); URL.revokeObjectURL(url); }, 2000);
+      downloaded = true;
+    } catch (err) {
+      console.error('[TableWidget] CSV download failed', err);
+    }
+    // The payload carries the file so a host that blocks anchor downloads (a
+    // sandboxed iframe without allow-downloads, which is what makes the export
+    // icon look dead) can save it through its own channel.
+    onEvent({ type: 'FILTER_CHANGE', payload: { action: 'export', fileName, csv, downloaded } });
   }
 
   // Cells carrying a binding — drives the corner indicator + topic tooltip so
@@ -170,6 +422,8 @@ export function TableWidget({ config, data, onEvent, editable = false, unsTree, 
     () => computeBoundCells(cfg.cellBindings, cfg.seriesBindings),
     [cfg.cellBindings, cfg.seriesBindings],
   );
+  const boundCellsRef = useRef(boundCells);
+  boundCellsRef.current = boundCells;
 
   // ── On-canvas Cell Config popover ──────────────────────────────────────────
   const [configCellId, setConfigCellId] = useState<string | null>(null);
@@ -177,45 +431,189 @@ export function TableWidget({ config, data, onEvent, editable = false, unsTree, 
   const [modalX, setModalX] = useState(0);
   const [modalY, setModalY] = useState(0);
 
-  const hasUNSBrowser = unsTree !== undefined && resolveUNSValue !== undefined;
+  useZoneIgnorePortals();
 
+  const hasInjectedUNS = unsWorkspaces !== undefined && loadUnsChildren !== undefined;
+  const unsHook = useUNSTreePicker(hasInjectedUNS ? undefined : authentication);
+  // The popover is usable whenever a source can actually list workspaces; without
+  // one the cell popover falls back to a plain paste-a-topic field.
+  const hasUNSBrowser = hasInjectedUNS || authentication !== undefined;
+
+  const unsWs        = hasInjectedUNS ? unsWorkspaces!  : unsHook.workspaces;
+  const unsWsLoading = hasInjectedUNS ? isLoadingWorkspaces : unsHook.isLoadingWorkspaces;
+  const unsOpen      = unsHook.loadWorkspaces;
+  const unsChildren  = hasInjectedUNS ? loadUnsChildren! : unsHook.loadChildren;
+  const unsSearch    = hasInjectedUNS ? searchUnsNodes   : unsHook.searchNodes;
+
+  // ── Persistence: serialize the store + grid geometry back into uiConfig ───
   // The widget never mutates the envelope — it hands the updated uiConfig to the
   // host via onEvent, which rebuilds dynamicBindingPathList and persists.
-  function emitConfig(cellBindings: typeof cfg.cellBindings, seriesBindings: typeof cfg.seriesBindings) {
-    onEvent({ type: 'CONFIG_CHANGE', payload: { uiConfig: { ...cfg, cellBindings, seriesBindings } } });
+  const geoRef = useRef<GridGeometry | null>(null);
+  const emitTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+
+  // Locally-ahead position-addressed config. The cfg prop only updates after
+  // the host round-trips a CONFIG_CHANGE, so consecutive edits (two quick
+  // popover clicks, an insert-row remap followed by a binding edit) must build
+  // on what we last emitted — not on the stale prop — or the first edit is
+  // silently lost. A pending key is cleared the moment the round-trip catches
+  // up with it (effect below), after which cfg is the single truth again.
+  const pendingUiRef = useRef<Partial<RemappableConfig>>({});
+
+  useEffect(() => {
+    const p = pendingUiRef.current;
+    (Object.keys(p) as (keyof RemappableConfig)[]).forEach((key) => {
+      if (JSON.stringify(p[key]) === JSON.stringify(cfg[key])) delete p[key];
+    });
+  }, [cfg]);
+
+  function latest<K extends keyof RemappableConfig>(key: K): RemappableConfig[K] {
+    return (pendingUiRef.current[key] ?? cfg[key]) as RemappableConfig[K];
   }
 
-  function resolveTopic(raw: string): string {
-    return resolveUNSValue ? resolveUNSValue(raw) : raw;
+  // Drop the captured geometry when the incoming config disagrees with it —
+  // that means something other than this widget (the configurator, another
+  // session) changed rows/columns/freeze/sizes, and re-spreading the stale
+  // snapshot on the next emit would revert that change and, worse, make
+  // serializeCells drop content beyond the stale bounds. Our own emit
+  // round-trips carry geometry equal to the snapshot, so those keep it.
+  useEffect(() => {
+    const geo = geoRef.current;
+    if (!geo) return;
+    const same =
+      geo.rows === cfg.rows &&
+      geo.columns === cfg.columns &&
+      geo.freezeRows === cfg.freezeRows &&
+      geo.freezeColumns === cfg.freezeColumns &&
+      JSON.stringify(geo.columnWidths) === JSON.stringify(cfg.columnWidths) &&
+      JSON.stringify(geo.rowHeights) === JSON.stringify(cfg.rowHeights);
+    if (!same) geoRef.current = null;
+  }, [cfg]);
+
+  // Sparse uiConfig.cells snapshot. Manual text and non-default formats only:
+  // values of bound / series-filled cells are runtime data the service will
+  // re-populate — persisting them would freeze a live reading into the envelope.
+  function serializeCells(rows: number, columns: number): Record<string, PersistedCell> {
+    const cells: Record<string, PersistedCell> = {};
+    for (const [cellId, cell] of storeRef.current!.entries()) {
+      const m = /^R(\d+)C(\d+)$/.exec(cellId);
+      if (!m || parseInt(m[1], 10) >= rows || parseInt(m[2], 10) >= columns) continue;
+      const entry: PersistedCell = {};
+      const isDataCell = boundCells.has(cellId) || dataFilledRef.current.has(cellId);
+      if (cell.value !== '' && !isDataCell) entry.value = cell.value;
+      if (!isDefaultFormat(cell.format)) entry.format = cell.format;
+      if (entry.value !== undefined || entry.format !== undefined) cells[cellId] = entry;
+    }
+    return cells;
+  }
+
+  function emitUiConfig(overrides?: Partial<TableWidgetUIConfig>) {
+    if (emitTimerRef.current) { clearTimeout(emitTimerRef.current); emitTimerRef.current = null; }
+    const geo = geoRef.current;
+    const rows = geo?.rows ?? cfg.rows;
+    const columns = geo?.columns ?? cfg.columns;
+    const cells = serializeCells(rows, columns);
+    const uiConfig: TableWidgetUIConfig = {
+      ...cfg,
+      ...(geo
+        ? {
+            rows: geo.rows,
+            columns: geo.columns,
+            freezeRows: geo.freezeRows,
+            freezeColumns: geo.freezeColumns,
+            columnWidths: geo.columnWidths,
+            rowHeights: geo.rowHeights,
+          }
+        : {}),
+      ...pendingUiRef.current,
+      cells,
+      ...overrides,
+    };
+    lastEmittedCellsJsonRef.current = JSON.stringify(uiConfig.cells);
+    // The binding index travels WITH the config so the invariant "list matches
+    // uiConfig" is enforced where uiConfig is produced — a host that persists
+    // the payload verbatim stays correct without knowing this widget's rules.
+    onEvent({
+      type: 'CONFIG_CHANGE',
+      payload: { uiConfig, dynamicBindingPathList: buildDynamicBindingPathList(uiConfig) },
+    });
+  }
+
+  // Grid edits arrive in bursts (typing, drag-resize, multi-cell formatting) —
+  // coalesce them into one CONFIG_CHANGE ~400 ms after the last mutation.
+  const emitUiConfigRef = useRef(emitUiConfig);
+  emitUiConfigRef.current = emitUiConfig;
+
+  function handleGridChange(geo: GridGeometry, mutation?: GridMutation) {
+    geoRef.current = geo;
+    if (mutation) {
+      // A structural insert/delete shifted cell CONTENTS in the store — shift
+      // every position-addressed piece of config with it (bindings, rule
+      // ranges, the row-filter range) so they keep pointing at the same data.
+      const remapped = remapForGridMutation(
+        {
+          cellBindings: latest('cellBindings'),
+          seriesBindings: latest('seriesBindings'),
+          conditionalRules: latest('conditionalRules'),
+          rowFilter: latest('rowFilter'),
+        },
+        mutation,
+      );
+      Object.assign(pendingUiRef.current, remapped);
+    }
+    if (emitTimerRef.current) clearTimeout(emitTimerRef.current);
+    emitTimerRef.current = setTimeout(() => emitUiConfigRef.current(), 400);
+  }
+
+  // Flush a pending debounced emit on unmount so the last edit isn't lost.
+  useEffect(() => () => {
+    if (emitTimerRef.current) {
+      clearTimeout(emitTimerRef.current);
+      emitUiConfigRef.current();
+    }
+  }, []);
+
+  // All binding edits build on latest() — the pending layer, not the cfg prop —
+  // so two quick popover edits can't lose the first one while the host is
+  // still round-tripping (the classic slow-host race).
+  function emitConfig(cellBindings: typeof cfg.cellBindings, seriesBindings: typeof cfg.seriesBindings) {
+    pendingUiRef.current.cellBindings = cellBindings;
+    pendingUiRef.current.seriesBindings = seriesBindings;
+    emitUiConfig({ cellBindings, seriesBindings });
   }
 
   function upsertCellTopic(cellId: string, rawValue: string) {
-    const topic = resolveTopic(rawValue);
-    const nextSeries = cfg.seriesBindings.filter((s) => s.baseCellId !== cellId);
-    const exists = cfg.cellBindings.some((b) => b.cellId === cellId);
+    const topic = rawValue;
+    const cellBindings = latest('cellBindings');
+    const nextSeries = latest('seriesBindings').filter((s) => s.baseCellId !== cellId);
+    const exists = cellBindings.some((b) => b.cellId === cellId);
     const nextCells = exists
-      ? cfg.cellBindings.map((b) => (b.cellId === cellId ? { ...b, topic } : b))
-      : [...cfg.cellBindings, { cellId, topic }];
+      ? cellBindings.map((b) => (b.cellId === cellId ? { ...b, topic } : b))
+      : [...cellBindings, { cellId, topic }];
     emitConfig(nextCells, nextSeries);
   }
 
   function upsertSeries(cellId: string, patch: Partial<{ topic: string; direction: SeriesDirection; limit: number }>) {
-    const nextCells = cfg.cellBindings.filter((b) => b.cellId !== cellId);
-    const existing = cfg.seriesBindings.find((s) => s.baseCellId === cellId);
-    const cleaned = patch.topic !== undefined ? { ...patch, topic: resolveTopic(patch.topic) } : patch;
+    const seriesBindings = latest('seriesBindings');
+    const nextCells = latest('cellBindings').filter((b) => b.cellId !== cellId);
+    const existing = seriesBindings.find((s) => s.baseCellId === cellId);
     const nextSeries = existing
-      ? cfg.seriesBindings.map((s) => (s.baseCellId === cellId ? { ...s, ...cleaned } : s))
+      ? seriesBindings.map((s) => (s.baseCellId === cellId ? { ...s, ...patch } : s))
       : [
-          ...cfg.seriesBindings,
-          { id: `series_${Date.now()}`, baseCellId: cellId, topic: '', direction: 'vertical' as SeriesDirection, limit: 0, ...cleaned },
+          ...seriesBindings,
+          { id: `series_${Date.now()}`, baseCellId: cellId, topic: '', direction: 'vertical' as SeriesDirection, limit: 0, ...patch },
         ];
     emitConfig(nextCells, nextSeries);
   }
 
   function clearCellBinding(cellId: string) {
+    // Blank the last live reading immediately — leaving it visible (and letting
+    // the next serialize persist it as manual content) is exactly the "freeze a
+    // live value into the envelope" failure the persistence layer must avoid.
+    storeRef.current!.setValue(cellId, '');
+    dataFilledRef.current.delete(cellId);
     emitConfig(
-      cfg.cellBindings.filter((b) => b.cellId !== cellId),
-      cfg.seriesBindings.filter((s) => s.baseCellId !== cellId),
+      latest('cellBindings').filter((b) => b.cellId !== cellId),
+      latest('seriesBindings').filter((s) => s.baseCellId !== cellId),
     );
   }
 
@@ -228,20 +626,24 @@ export function TableWidget({ config, data, onEvent, editable = false, unsTree, 
   }
 
   function closeCellConfig() {
-    // Drop any binding left without a topic so the envelope stays clean.
-    const nextCells = cfg.cellBindings.filter((b) => (b.topic ?? '').trim());
-    const nextSeries = cfg.seriesBindings.filter((s) => (s.topic ?? '').trim());
-    if (nextCells.length !== cfg.cellBindings.length || nextSeries.length !== cfg.seriesBindings.length) {
+    // Drop any binding left without a topic so the envelope stays clean —
+    // pruning from latest(), never the possibly-lagging cfg prop, so a
+    // just-picked topic still in round-trip flight can't be wiped by Done.
+    const cellBindings = latest('cellBindings');
+    const seriesBindings = latest('seriesBindings');
+    const nextCells = cellBindings.filter((b) => (b.topic ?? '').trim());
+    const nextSeries = seriesBindings.filter((s) => (s.topic ?? '').trim());
+    if (nextCells.length !== cellBindings.length || nextSeries.length !== seriesBindings.length) {
       emitConfig(nextCells, nextSeries);
     }
     setConfigCellId(null);
   }
 
   const activeCellTopic = configCellId
-    ? cfg.cellBindings.find((b) => b.cellId === configCellId)?.topic ?? ''
+    ? latest('cellBindings').find((b) => b.cellId === configCellId)?.topic ?? ''
     : '';
   const activeSeries = configCellId
-    ? cfg.seriesBindings.find((s) => s.baseCellId === configCellId)
+    ? latest('seriesBindings').find((s) => s.baseCellId === configCellId)
     : undefined;
 
   const previewCells = useMemo(() => {
@@ -254,9 +656,18 @@ export function TableWidget({ config, data, onEvent, editable = false, unsTree, 
   const card = cfg.style.card;
   const titleCfg = cfg.style.title;
   const showExportButton = cfg.style.showExportButton;
+  const showSearch = cfg.style.showSearch;
   const showHeader = cfg.title.trim() !== '';
 
   const cardInlineStyle: React.CSSProperties = {
+    // The configured widget size is applied here, not only by the harness
+    // wrapper, so Width/Height in the configurator visibly do something in
+    // every host. maxWidth/maxHeight keep a host container in charge when it
+    // gives the widget less room than the configured size asks for.
+    width: cfg.widgetWidth || undefined,
+    height: cfg.widgetHeight || undefined,
+    maxWidth: '100%',
+    maxHeight: '100%',
     backgroundColor: card.bg || undefined,
     ...(card.wrapInCard ? {
       border: `${card.borderWidth}px solid ${card.borderColor || '#e0e0e0'}`,
@@ -273,26 +684,68 @@ export function TableWidget({ config, data, onEvent, editable = false, unsTree, 
               : titleCfg.fontWeight === 'medium'  ? 500
               : titleCfg.fontWeight === 'regular' ? 400
               : undefined,
+    textAlign:  titleCfg.align,
   };
 
   return (
     <div className="tw-widget" style={cardInlineStyle}>
-      <div className="tw-topbar">
-        {showHeader && (
-          <h3 className="tw-title" style={titleInlineStyle}>{cfg.title}</h3>
-        )}
-        {showExportButton && (
+      {(showHeader || showExportButton || showSearch) && (
+        <div className="tw-topbar">
+          {showHeader && (
+            <h3 className="tw-title" style={titleInlineStyle}>{cfg.title}</h3>
+          )}
           <div className="tw-topbar__actions">
-            <Button
-              iconOnly
-              leadingIcon={<Download size={14} />}
-              variant="Secondary"
-              size="Small"
-              onClick={handleExport}
-            />
+            {showSearch && (
+              <div className="tw-search">
+                <SearchInput
+                  placeholder="Search table…"
+                  inputValue={searchQuery}
+                  showSearchIcon
+                  showClearButton
+                  onInputChange={(value: string) => setSearchQuery(value)}
+                  onClearButtonClicked={() => setSearchQuery('')}
+                  onSubmit={() => stepHit(1)}
+                />
+                {searchQuery.trim() !== '' && (
+                  <div className="tw-search__nav">
+                    <span className="tw-search__count">
+                      {searchHits.length === 0 ? '0/0' : `${(hitCursor % searchHits.length) + 1}/${searchHits.length}`}
+                    </span>
+                    <Button
+                      iconOnly
+                      aria-label="Previous match"
+                      leadingIcon={<ChevronUp size={13} />}
+                      variant="Gray"
+                      size="XSmall"
+                      isDisabled={searchHits.length === 0}
+                      onClick={() => stepHit(-1)}
+                    />
+                    <Button
+                      iconOnly
+                      aria-label="Next match"
+                      leadingIcon={<ChevronDown size={13} />}
+                      variant="Gray"
+                      size="XSmall"
+                      isDisabled={searchHits.length === 0}
+                      onClick={() => stepHit(1)}
+                    />
+                  </div>
+                )}
+              </div>
+            )}
+            {showExportButton && (
+              <Button
+                iconOnly
+                aria-label="Download table as CSV"
+                leadingIcon={<Download size={14} />}
+                variant="Secondary"
+                size="Small"
+                onClick={handleExport}
+              />
+            )}
           </div>
-        )}
-      </div>
+        </div>
+      )}
 
       {cfg.rowFilter.filters.length > 0 && (
         <div className="tw-filter-bar">
@@ -307,7 +760,7 @@ export function TableWidget({ config, data, onEvent, editable = false, unsTree, 
                   label={cfg.rowFilter.enableCount ? `${filter.name} (${count})` : filter.name}
                   icon={Icon ? <Icon size={12} /> : undefined}
                   isSelected={isActive}
-                  size="Small"
+                  size="small"
                   style={{
                     borderColor: filter.color,
                     color: filter.color,
@@ -355,22 +808,28 @@ export function TableWidget({ config, data, onEvent, editable = false, unsTree, 
           columns={cfg.columns}
           freezeRows={cfg.freezeRows}
           freezeColumns={cfg.freezeColumns}
+          configColWidths={cfg.columnWidths}
+          configRowHeights={cfg.rowHeights}
           store={storeRef.current}
           conditionalRules={cfg.conditionalRules}
           locked={cfg.locked}
           tableBorderStyle={cfg.style.tableBorderStyle}
           boundCells={boundCells}
           previewCells={previewCells}
+          dataPrecision={cfg.dataPrecision}
+          isDataCell={isDataCell}
+          searchMatches={searchMatchSet}
+          activeMatch={activeHit}
           onCellConfigure={editable && !cfg.locked ? openCellConfig : undefined}
           hiddenRows={filterVisibility.hiddenRows}
           rowColors={filterVisibility.rowColors}
+          onUserChange={editable && !cfg.locked ? handleGridChange : undefined}
         />
       </div>
 
       {/* ── Cell Config popover (double-click a cell when editable) ── */}
       {editable && configCellId && (
         <Modal
-          {...({ transparent: true } as any)}
           isOpen={configCellId !== null}
           positionX={modalX}
           positionY={modalY}
@@ -400,13 +859,15 @@ export function TableWidget({ config, data, onEvent, editable = false, unsTree, 
 
               {configKind === 'single' ? (
                 hasUNSBrowser ? (
-                  <UNSPathInput
+                  <UNSTreePicker
                     label="UNS Topic"
-                    placeholder="Type / to browse…"
+                    placeholder="Select a topic…"
                     value={activeCellTopic}
-                    tree={unsTree}
-                    isLoading={isLoadingTree}
-                    onOpen={onLoadWorkspaces}
+                    workspaces={unsWs}
+                    isLoadingWorkspaces={unsWsLoading}
+                    loadChildren={unsChildren}
+                    searchNodes={unsSearch}
+                    onOpen={unsOpen}
                     onChange={(value: string) => upsertCellTopic(configCellId, value)}
                   />
                 ) : (
@@ -420,13 +881,15 @@ export function TableWidget({ config, data, onEvent, editable = false, unsTree, 
               ) : (
                 <>
                   {hasUNSBrowser ? (
-                    <UNSPathInput
+                    <UNSTreePicker
                       label="Array topic"
-                      placeholder="Type / to browse…"
+                      placeholder="Select a topic…"
                       value={activeSeries?.topic ?? ''}
-                      tree={unsTree}
-                      isLoading={isLoadingTree}
-                      onOpen={onLoadWorkspaces}
+                      workspaces={unsWs}
+                      isLoadingWorkspaces={unsWsLoading}
+                      loadChildren={unsChildren}
+                      searchNodes={unsSearch}
+                      onOpen={unsOpen}
                       onChange={(value: string) => upsertSeries(configCellId, { topic: value })}
                     />
                   ) : (
@@ -484,16 +947,4 @@ export function TableWidget({ config, data, onEvent, editable = false, unsTree, 
   );
 }
 
-// A1-style label for a cell id ("R0C0" → "A1").
-function cellIdToRef(cellId: string): string {
-  const m = /^R(\d+)C(\d+)$/.exec(cellId);
-  if (!m) return '';
-  const row = parseInt(m[1], 10);
-  let c = parseInt(m[2], 10);
-  let col26 = '';
-  do {
-    col26 = String.fromCharCode(65 + (c % 26)) + col26;
-    c = Math.floor(c / 26) - 1;
-  } while (c >= 0);
-  return `${col26}${row + 1}`;
-}
+// cellIdToRef lives in formulaEngine.ts beside its inverse refToCellId.

@@ -1,4 +1,4 @@
-import { DataValue } from './types';
+import { BindingType, DataValue, ResolveSlot } from './types';
 
 const STAGING_BASE = 'https://stagingsv.iosense.io/api';
 const GRAPH = 'iosense_test_uns';
@@ -13,22 +13,64 @@ export async function validateSSOToken(ssoToken: string): Promise<string> {
   return json.token;
 }
 
+// One entry of the resolveAndCompute request `config[]`. `type: 'series'` is
+// what makes the endpoint bucket the window and return `slots` — without it a
+// topic collapses to the single value its aggregation postfix asks for.
+export interface ResolveConfigItem {
+  key: string;
+  topic: string;
+  type?: BindingType;
+}
+
+// One row of the resolveAndCompute response. Single-value rows carry `value`;
+// series rows carry `slots` (and no `value`). A row that failed to resolve
+// carries `error`, or `skipped` + `reason` when the leaf is not computable.
+export interface ResolveRow {
+  key: string;
+  value?: DataValue;
+  slots?: ResolveSlot[];
+  path?: string;
+  error?: string;
+  skipped?: boolean;
+  reason?: string;
+  meta?: {
+    type?: string;
+    unit?: string;
+    dataPrecision?: number | null;
+    aggregation?: { operator?: string | null; downscale?: number | null; resolution?: string | null };
+  };
+}
+
+// Bucket size for series rows. Anything the endpoint accepts as `timeFrame`.
+export type ResolveTimeFrame = 'minute' | 'hour' | 'day' | 'week' | 'month';
+
 export async function resolveAndCompute(
   authentication: string,
-  config: Array<{ key: string; topic: string }>,
+  config: ResolveConfigItem[],
   startTime: number,
   endTime: number,
-): Promise<Array<{ key: string; value: DataValue }>> {
+  options?: { timeFrame?: ResolveTimeFrame; timezone?: string },
+): Promise<ResolveRow[]> {
   const res = await fetch(`${STAGING_BASE}/account/uns/resolveAndCompute`, {
     method: 'POST',
     headers: {
       'Content-Type': 'application/json',
       Authorization: `Bearer ${authentication}`,
     },
-    body: JSON.stringify({ graph: GRAPH, config, startTime, endTime }),
+    body: JSON.stringify({
+      graph: GRAPH,
+      config,
+      startTime,
+      endTime,
+      ...(options?.timeFrame ? { timeFrame: options.timeFrame } : {}),
+      ...(options?.timezone ? { timezone: options.timezone } : {}),
+    }),
   });
   const json = await res.json();
-  return (json?.data ?? []) as Array<{ key: string; value: DataValue }>;
+  if (json?.success === false) {
+    throw new Error(`resolveAndCompute failed: ${(json.errors ?? []).join(', ') || res.status}`);
+  }
+  return (json?.data ?? []) as ResolveRow[];
 }
 
 export async function fetchUNSNodes(
@@ -44,8 +86,11 @@ export async function fetchUNSNodes(
   const res = await fetch(`${STAGING_BASE}/account/uns/nodes?${params}`, {
     headers: { Authorization: `Bearer ${authentication}` },
   });
+  if (!res.ok) throw new Error(`uns/nodes ${res.status} for graph=${graph}`);
   const json = await res.json();
-  return (json?.data?.data ?? []) as Array<{
+  // The endpoint double-nests: { data: { data: [...] } }. Some deployments return
+  // the single-nested shape, so accept both rather than silently yielding [].
+  return (json?.data?.data ?? json?.data ?? []) as Array<{
     id: string; type: string; name?: string; path: string | null; parentId: string | null;
   }>;
 }
