@@ -38,6 +38,69 @@
   flex-shrink: 0;
 }
 
+/* ── Header actions (ChartActions: settings + more) ── */
+.tw-actions {
+  display: flex;
+  align-items: center;
+  flex-shrink: 0;
+}
+
+/* ── More (⋯) menu ── */
+.tw-menu {
+  position: fixed;
+  z-index: 1000;
+  background: var(--background-default-intense, #fff);
+  border: 1px solid var(--fds-border-subtle, #ddd);
+  border-radius: var(--global-border-radius-medium, 6px);
+  box-shadow: 0 4px 16px rgba(0, 0, 0, 0.12), 0 1px 4px rgba(0, 0, 0, 0.08);
+  padding: 4px 0;
+  overflow: hidden;
+}
+
+.tw-menu__item {
+  display: flex;
+  align-items: center;
+  gap: var(--spacing-03, 8px);
+  width: 100%;
+  padding: 6px 14px;
+  font-size: 13px;
+  line-height: 1.5;
+  text-align: left;
+  background: transparent;
+  border: none;
+  cursor: pointer;
+  color: var(--text-default-primary, #1a1a1a);
+  white-space: nowrap;
+}
+.tw-menu__item:hover {
+  background: var(--background-gray-hover-light, #f0f0f0);
+}
+
+.tw-menu__empty {
+  margin: 0;
+  padding: 6px 14px;
+  font-size: 12px;
+  color: var(--text-default-tertiary, #999);
+}
+
+/* ── Table settings panel ── */
+.tw-settings-modal .fds-modal {
+  width: 300px;
+}
+
+.tw-settings__body {
+  display: flex;
+  flex-direction: column;
+  gap: var(--spacing-04, 12px);
+}
+
+.tw-settings__note {
+  margin: 0;
+  font-size: 11px;
+  line-height: 1.5;
+  color: var(--text-default-tertiary, #999);
+}
+
 /* ── In-table search ── */
 .tw-search {
   display: flex;

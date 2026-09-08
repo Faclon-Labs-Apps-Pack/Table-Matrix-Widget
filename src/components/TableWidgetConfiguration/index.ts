@@ -1,7 +1,6 @@
 import { createRoot, Root } from 'react-dom/client';
 import React from 'react';
 import { TableWidgetConfiguration } from './TableWidgetConfiguration';
-import '@faclon-labs/design-sdk/styles.css';
 
 const roots = new Map<string, Root>();
 

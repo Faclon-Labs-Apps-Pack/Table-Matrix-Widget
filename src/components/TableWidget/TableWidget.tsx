@@ -1,6 +1,7 @@
 import { useRef, useEffect, useMemo, useState } from 'react';
 import { Button, TextInput, CounterInput, Chip, Checkbox, Popover, PopoverBody, UNSTreePicker, SearchInput } from '@faclon-labs/design-sdk';
 import { Modal, ModalHeader, ModalBody, ModalFooter } from '@faclon-labs/design-sdk/Modal';
+import { ChartActions } from '@faclon-labs/design-sdk/Chart';
 import type { UNSNode, UNSWorkspace } from '@faclon-labs/design-sdk/UNSTreePicker';
 import { Download, ArrowDown, ArrowRight, Trash2, Filter, ChevronUp, ChevronDown } from 'react-feather';
 import { DataEntry, WidgetEvent, SeriesDirection, PersistedCell, TableWidgetUIConfig } from '../../iosense-sdk/types';
@@ -457,11 +458,11 @@ export function TableWidget(props: TableWidgetProps) {
   // on what we last emitted — not on the stale prop — or the first edit is
   // silently lost. A pending key is cleared the moment the round-trip catches
   // up with it (effect below), after which cfg is the single truth again.
-  const pendingUiRef = useRef<Partial<RemappableConfig>>({});
+  const pendingUiRef = useRef<Partial<TableWidgetUIConfig>>({});
 
   useEffect(() => {
     const p = pendingUiRef.current;
-    (Object.keys(p) as (keyof RemappableConfig)[]).forEach((key) => {
+    (Object.keys(p) as (keyof TableWidgetUIConfig)[]).forEach((key) => {
       if (JSON.stringify(p[key]) === JSON.stringify(cfg[key])) delete p[key];
     });
   }, [cfg]);
@@ -653,6 +654,80 @@ export function TableWidget(props: TableWidgetProps) {
     return seriesPreviewCells(configCellId, dir, count, cfg.rows, cfg.columns);
   }, [configCellId, configKind, activeSeries, cfg.rows, cfg.columns]);
 
+  // ── Header actions: Table Settings (gear) + More (⋯) ───────────────────────
+  // Both panels are anchored off the actions group, so they open under the icon
+  // that was clicked instead of in the middle of the dashboard.
+  const actionsRef = useRef<HTMLDivElement>(null);
+  const [isSettingsOpen, setIsSettingsOpen] = useState(false);
+  const [settingsX, setSettingsX] = useState(0);
+  const [settingsY, setSettingsY] = useState(0);
+  const [moreMenu, setMoreMenu] = useState<{ x: number; y: number } | null>(null);
+
+  const SETTINGS_W = 300;
+  const MORE_W = 190;
+
+  function anchorRect(): DOMRect | null {
+    return actionsRef.current?.getBoundingClientRect() ?? null;
+  }
+
+  function openSettings() {
+    const rect = anchorRect();
+    setMoreMenu(null);
+    if (rect) {
+      // Right-aligned under the icon group, clamped into the viewport so the
+      // panel stays reachable when the widget sits at the edge of a dashboard.
+      setSettingsX(Math.max(8, Math.min(rect.right - SETTINGS_W, window.innerWidth - SETTINGS_W - 8)));
+      setSettingsY(Math.max(8, Math.min(rect.bottom + 8, window.innerHeight - 240)));
+    }
+    setIsSettingsOpen(true);
+  }
+
+  function toggleMoreMenu() {
+    setIsSettingsOpen(false);
+    setMoreMenu((prev) => {
+      if (prev) return null;
+      const rect = anchorRect();
+      if (!rect) return null;
+      return {
+        x: Math.max(8, Math.min(rect.right - MORE_W, window.innerWidth - MORE_W - 8)),
+        y: rect.bottom + 4,
+      };
+    });
+  }
+
+  // Dismiss the More menu the way every other menu on the page behaves. Clicks
+  // on the action group itself are left alone — closing there would fight the
+  // toggle, so a second click on ⋯ would close and immediately reopen.
+  useEffect(() => {
+    if (!moreMenu) return;
+    function onDown(e: MouseEvent) {
+      if (actionsRef.current?.contains(e.target as Node)) return;
+      setMoreMenu(null);
+    }
+    function onKey(e: KeyboardEvent) { if (e.key === 'Escape') setMoreMenu(null); }
+    document.addEventListener('mousedown', onDown);
+    document.addEventListener('keydown', onKey);
+    return () => {
+      document.removeEventListener('mousedown', onDown);
+      document.removeEventListener('keydown', onKey);
+    };
+  }, [moreMenu]);
+
+  // Horizontal-scroll setting. Held locally as well as in the envelope: the cfg
+  // prop only catches up after the host round-trips our CONFIG_CHANGE, and a
+  // checkbox that stays unticked for a beat (or forever, on a host that does
+  // not persist the key) reads as broken.
+  const [hScroll, setHScroll] = useState(cfg.lockedHorizontalScroll);
+  useEffect(() => { setHScroll(cfg.lockedHorizontalScroll); }, [cfg.lockedHorizontalScroll]);
+
+  function handleScrollToggle(next: boolean) {
+    setHScroll(next);
+    // Park it in the pending layer too, so an unrelated emit in flight (a cell
+    // edit, a resize) rebuilt from the still-stale cfg can't revert the toggle.
+    pendingUiRef.current.lockedHorizontalScroll = next;
+    emitUiConfig({ lockedHorizontalScroll: next });
+  }
+
   const card = cfg.style.card;
   const titleCfg = cfg.style.title;
   const showExportButton = cfg.style.showExportButton;
@@ -660,14 +735,14 @@ export function TableWidget(props: TableWidgetProps) {
   const showHeader = cfg.title.trim() !== '';
 
   const cardInlineStyle: React.CSSProperties = {
-    // The configured widget size is applied here, not only by the harness
-    // wrapper, so Width/Height in the configurator visibly do something in
-    // every host. maxWidth/maxHeight keep a host container in charge when it
-    // gives the widget less room than the configured size asks for.
-    width: cfg.widgetWidth || undefined,
-    height: cfg.widgetHeight || undefined,
-    maxWidth: '100%',
-    maxHeight: '100%',
+    // The host container is the single source of truth for the widget box: the
+    // widget always fills it exactly, in both lock modes. Unlocked, the table
+    // keeps its natural track sizes and scrolls inside that box; locked, the
+    // columns are scaled to the box width (see VirtualGrid) so nothing is cut
+    // off sideways. Pinning the configured px size here instead used to leave
+    // the widget either overflowing or floating in a partly empty tile.
+    width: '100%',
+    height: '100%',
     backgroundColor: card.bg || undefined,
     ...(card.wrapInCard ? {
       border: `${card.borderWidth}px solid ${card.borderColor || '#e0e0e0'}`,
@@ -689,8 +764,8 @@ export function TableWidget(props: TableWidgetProps) {
 
   return (
     <div className="tw-widget" style={cardInlineStyle}>
-      {(showHeader || showExportButton || showSearch) && (
-        <div className="tw-topbar">
+      {/* The action group is always present, so the topbar always renders. */}
+      <div className="tw-topbar">
           {showHeader && (
             <h3 className="tw-title" style={titleInlineStyle}>{cfg.title}</h3>
           )}
@@ -733,19 +808,16 @@ export function TableWidget(props: TableWidgetProps) {
                 )}
               </div>
             )}
-            {showExportButton && (
-              <Button
-                iconOnly
-                aria-label="Download table as CSV"
-                leadingIcon={<Download size={14} />}
-                variant="Secondary"
-                size="Small"
-                onClick={handleExport}
+            <div className="tw-actions" ref={actionsRef}>
+              <ChartActions
+                settingsLabel="Table settings"
+                moreLabel="More actions"
+                onSettingsClick={openSettings}
+                onMoreClick={toggleMoreMenu}
               />
-            )}
+            </div>
           </div>
         </div>
-      )}
 
       {cfg.rowFilter.filters.length > 0 && (
         <div className="tw-filter-bar">
@@ -813,6 +885,7 @@ export function TableWidget(props: TableWidgetProps) {
           store={storeRef.current}
           conditionalRules={cfg.conditionalRules}
           locked={cfg.locked}
+          horizontalScroll={hScroll}
           tableBorderStyle={cfg.style.tableBorderStyle}
           boundCells={boundCells}
           previewCells={previewCells}
@@ -826,6 +899,56 @@ export function TableWidget(props: TableWidgetProps) {
           onUserChange={editable && !cfg.locked ? handleGridChange : undefined}
         />
       </div>
+
+      {/* ── More (⋯) menu ── */}
+      {moreMenu && (
+        <div
+          className="tw-menu"
+          style={{ top: moreMenu.y, left: moreMenu.x, width: MORE_W }}
+          onMouseDown={(e) => e.stopPropagation()}
+        >
+          {showExportButton ? (
+            <button
+              className="tw-menu__item"
+              onClick={() => { setMoreMenu(null); handleExport(); }}
+            >
+              <Download size={13} /> Download CSV
+            </button>
+          ) : (
+            <p className="tw-menu__empty">No actions available</p>
+          )}
+        </div>
+      )}
+
+      {/* ── Table Settings (gear) ── */}
+      {isSettingsOpen && (
+        <Modal
+          isOpen={isSettingsOpen}
+          positionX={settingsX}
+          positionY={settingsY}
+          className="tw-settings-modal"
+          onClose={() => setIsSettingsOpen(false)}
+          header={<ModalHeader title="Table settings" onClose={() => setIsSettingsOpen(false)} />}
+        >
+          <ModalBody>
+            <div className="tw-settings__body">
+              <Checkbox
+                label="Scroll bar"
+                helpText="Available in lock mode. Columns keep their own width and scroll horizontally, instead of every column being compacted to fit the widget."
+                checked={hScroll}
+                isDisabled={!cfg.locked}
+                onChange={(e: React.ChangeEvent<HTMLInputElement>) => handleScrollToggle(e.target.checked)}
+              />
+              {!cfg.locked && (
+                <p className="tw-settings__note">
+                  Lock the table layout to use this — an unlocked table already scrolls in both
+                  directions.
+                </p>
+              )}
+            </div>
+          </ModalBody>
+        </Modal>
+      )}
 
       {/* ── Cell Config popover (double-click a cell when editable) ── */}
       {editable && configCellId && (

@@ -1,14 +1,19 @@
 import { useState, useEffect, useRef } from 'react';
-import { TextInput, CounterInput, Button, Switch, SelectInput, DropdownMenu, ActionListItem, ColorInput, UNSTreePicker } from '@faclon-labs/design-sdk';
+import {
+  TextInput, CounterInput, Button, IconButton, Switch, Checkbox,
+  SelectInput, DropdownMenu, ActionListItem, ColorInput, UNSTreePicker,
+  Tabs, TabItem, TabsLeadingItem, Accordion, AccordionItem, SwitchButtonGroup, SwitchButtonBase,
+} from '@faclon-labs/design-sdk';
 import { Modal, ModalHeader, ModalBody, ModalFooter } from '@faclon-labs/design-sdk/Modal';
+import { Tooltip } from '@faclon-labs/design-sdk/Tooltip';
 import type { UNSNode, UNSWorkspace } from '@faclon-labs/design-sdk/UNSTreePicker';
-import { Bold, Italic, ChevronUp, ChevronDown, X, Plus, Grid, Type, ArrowRight, ArrowDown, ArrowLeft, AlignLeft, AlignCenter, AlignRight, Filter, Edit2 } from 'react-feather';
+import { Bold, Italic, ChevronUp, ChevronDown, X, Plus, ArrowRight, ArrowDown, ArrowLeft, AlignLeft, AlignCenter, AlignRight, Grid, Layout, Columns, Menu, Square, Hash, Link2, TrendingUp, Type, Droplet, Filter, Tag, Database } from 'react-feather';
 import {
   TableWidgetEnvelope, TableWidgetUIConfig,
   ConditionalRule, ConditionalRuleCondition,
-  TableWidgetCardStyle, TableWidgetTitleStyle, TableBorderStyle, TitleAlign, TimeDisplayMode,
+  TableWidgetCardStyle, TableWidgetTitleStyle, TableBorderStyle, TitleAlign, TitleFontWeight, TimeDisplayMode,
   CellBinding, SeriesBinding, SeriesDirection,
-  RowFilterConfig, RowFilterItem, RowFilterType,
+  RowFilterConfig, RowFilterType,
 } from '../../iosense-sdk/types';
 import { withTableWidgetDefaults } from '../../iosense-sdk/defaults';
 // Single source of truth for the binding index — shared with the dev harness so
@@ -55,22 +60,17 @@ function buildEnvelope(
 
 // cellIdToRef is imported from formulaEngine — one A1 grammar for the whole widget.
 
-// Row layout around the design-sdk Switch. The SDK Switch is a bare toggle
-// (it takes only an accessibilityLabel), so the title/help-text row lives here
-// while the control itself stays a design-sdk component rather than the
-// hand-rolled div switch this replaced.
-function ToggleRow({ label, hint, checked, onChange }: {
+// Label-and-switch row. The installed design-sdk Switch is a bare toggle (its
+// only naming prop is accessibilityLabel), so the visible label lives here
+// while the control itself stays a design-sdk component.
+function ToggleRow({ label, checked, onChange }: {
   label: string;
-  hint?: string;
   checked: boolean;
   onChange: (next: boolean) => void;
 }) {
   return (
-    <div className="wt-style-toggle">
-      <div className="wt-style-toggle__info">
-        <span className="wt-style-toggle__label">{label}</span>
-        {hint && <span className="wt-style-toggle__hint">{hint}</span>}
-      </div>
+    <div className="wt-toggle">
+      <span className="wt-toggle__label">{label}</span>
       <Switch
         accessibilityLabel={label}
         size="Small"
@@ -79,6 +79,89 @@ function ToggleRow({ label, hint, checked, onChange }: {
       />
     </div>
   );
+}
+
+// A labelled non-input control (segmented groups, mostly). TextInput and
+// friends carry their own label; these don't.
+function Field({ label, children }: { label: string; children: React.ReactNode }) {
+  return (
+    <div className="wt-field">
+      <span className="wt-field__label BodySmallDefault">{label}</span>
+      {children}
+    </div>
+  );
+}
+
+// Row-scoped icon actions (reorder / delete) shared by every list.
+function RowActions({ children }: { children: React.ReactNode }) {
+  return <div className="wt-row-actions">{children}</div>;
+}
+
+// Every icon-only control in this panel goes through here, so all of them
+// carry hover text — at 280px the icon is all the user sees.
+function IconAction({ icon, label, onClick, isDisabled }: {
+  icon: React.ReactNode;
+  label: string;
+  onClick: (e: React.MouseEvent) => void;
+  isDisabled?: boolean;
+}) {
+  return (
+    <Tooltip bodyText={label} placement="Top">
+      <IconButton
+        icon={icon}
+        size="Small"
+        isHighlighted
+        accessibilityLabel={label}
+        isDisabled={isDisabled}
+        onClick={onClick}
+      />
+    </Tooltip>
+  );
+}
+
+// One entry in a list section. The body is the edit affordance (it opens the
+// second panel); trailing icons stay for actions that only make sense in list
+// context, like reordering.
+function ListRow({ onEdit, children, actions, muted }: {
+  onEdit: () => void;
+  children: React.ReactNode;
+  actions?: React.ReactNode;
+  muted?: boolean;
+}) {
+  return (
+    <div className={`wt-item${muted ? ' wt-item--muted' : ''}`}>
+      <button type="button" className="wt-item__body" onClick={onEdit}>
+        {children}
+      </button>
+      {actions && <RowActions>{actions}</RowActions>}
+    </div>
+  );
+}
+
+// Monospace A1 address chip — the fixed-width part of a binding/series row.
+function RefChip({ text }: { text: string }) {
+  return <span className="wt-item__ref">{text || '—'}</span>;
+}
+
+// Trailing segment of a topic path, which is the only part that fits.
+function topicLeaf(topic: string): string {
+  const inner = topic.replace(/^\{\{\s*|\s*\}\}$/g, '').trim();
+  if (!inner) return 'No topic';
+  const path = inner.split('://').pop() ?? inner;
+  return path.split('/').filter(Boolean).pop() ?? inner;
+}
+
+// One-line summary of a rule's test, for the collapsed list row.
+function describeRule(rule: ConditionalRule): string {
+  const symbols: Partial<Record<ConditionalRuleCondition, string>> = {
+    greaterThan: '>', lessThan: '<', greaterThanOrEqual: '\u2265', lessThanOrEqual: '\u2264',
+    equalTo: '=', notEqualTo: '\u2260', contains: 'contains',
+  };
+  const scope = rule.range ? rangeToString(rule.range) : 'All cells';
+  if (rule.condition === 'isEmpty')    return `${scope} \u00b7 is empty`;
+  if (rule.condition === 'isNotEmpty') return `${scope} \u00b7 is not empty`;
+  if (rule.condition === 'between')    return `${scope} \u00b7 ${rule.value1 || '?'}\u2013${rule.value2 || '?'}`;
+  return `${scope} \u00b7 ${symbols[rule.condition] ?? ''} ${rule.value1 || '?'}`.replace(/\s+/g, ' ');
 }
 
 // Plain-language readout of the cells a series will populate. Without this the
@@ -117,6 +200,19 @@ const CONDITION_LABELS: Record<ConditionalRuleCondition, string> = {
   isNotEmpty:          '◉ Is not empty',
 };
 
+// Which nested editor the second panel is showing.
+type DetailPane =
+  | { kind: 'binding'; index: number }
+  | { kind: 'series';  index: number }
+  | { kind: 'rule';    id: string }
+  | { kind: 'filter';  id: string | null };
+
+const TITLE_WEIGHT_LABELS: Record<TitleFontWeight, string> = {
+  regular: 'Regular',
+  medium:  'Medium',
+  bold:    'Bold',
+};
+
 const NEEDS_VALUE1: ConditionalRuleCondition[] = [
   'greaterThan', 'lessThan', 'greaterThanOrEqual', 'lessThanOrEqual',
   'equalTo', 'notEqualTo', 'between', 'contains',
@@ -124,7 +220,7 @@ const NEEDS_VALUE1: ConditionalRuleCondition[] = [
 
 export function TableWidgetConfiguration(props: TableWidgetConfigurationProps) {
   const { config, authentication, onChange, onBack, editMode } = props;
-  const [activeTab, setActiveTab] = useState<'general' | 'style' | 'filter'>('general');
+  const [activeTab, setActiveTab] = useState<'data' | 'style' | 'filter'>('data');
   const configRef = useRef<HTMLDivElement>(null);
 
   // UNS topic browser source. Prefer Angular-injected props when the workspace
@@ -157,8 +253,6 @@ export function TableWidgetConfiguration(props: TableWidgetConfigurationProps) {
   const [title, setTitle] = useState<string>(ui.title);
   const [rows, setRows] = useState<number>(ui.rows);
   const [columns, setColumns] = useState<number>(ui.columns);
-  const [widgetWidth, setWidgetWidth] = useState<number>(ui.widgetWidth);
-  const [widgetHeight, setWidgetHeight] = useState<number>(ui.widgetHeight);
   const [locked, setLocked] = useState<boolean>(ui.locked);
   const [conditionalRules, setConditionalRules] = useState<ConditionalRule[]>(ui.conditionalRules);
   const [cardStyle, setCardStyle] = useState<TableWidgetCardStyle>(ui.style.card);
@@ -179,15 +273,22 @@ export function TableWidgetConfiguration(props: TableWidgetConfigurationProps) {
   const [rangeInputs, setRangeInputs] = useState<Record<string, string>>({});
   // Which rule's condition dropdown is open (SelectInput is a controlled trigger).
   const [openConditionRuleId, setOpenConditionRuleId] = useState<string | null>(null);
+  const [isWeightOpen, setIsWeightOpen] = useState(false);
   const [ruleRangeErrors, setRuleRangeErrors] = useState<Record<string, string>>({});
   const [rowFilterRangeInput, setRowFilterRangeInput] = useState<string>(ui.rowFilter.range);
   const [rowFilterRangeError, setRowFilterRangeError] = useState<string>('');
 
-  // Add/Edit Filter modal state (Configurator Overlay Pattern — see CLAUDE.md)
-  const [isFilterModalOpen, setIsFilterModalOpen] = useState(false);
-  const [filterModalX, setFilterModalX] = useState(0);
-  const [filterModalY, setFilterModalY] = useState(0);
-  const [editingFilterId, setEditingFilterId] = useState<string | null>(null);
+  // ── Second panel (Configurator Overlay Pattern — see CLAUDE.md) ───────────
+  // The config panel is ~280px wide, which is nowhere near enough for a topic
+  // picker, a condition builder or a format strip. Every nested editor
+  // therefore opens in a second panel to the right; the narrow panel keeps
+  // only one compact summary row per entry.
+  const [detail, setDetail] = useState<DetailPane | null>(null);
+  const [detailX, setDetailX] = useState(0);
+  const [detailY, setDetailY] = useState(0);
+
+  // Filter entries are the one draft-then-commit editor (name is validated for
+  // emptiness and duplicates), so their fields are staged here.
   const [filterNameInput, setFilterNameInput] = useState('');
   const [filterColorInput, setFilterColorInput] = useState('#0073ea');
   const [filterIconInput, setFilterIconInput] = useState(DEFAULT_ROW_FILTER_ICON);
@@ -199,8 +300,6 @@ export function TableWidgetConfiguration(props: TableWidgetConfigurationProps) {
       setTitle(u.title);
       setRows(u.rows);
       setColumns(u.columns);
-      setWidgetWidth(u.widgetWidth);
-      setWidgetHeight(u.widgetHeight);
       setLocked(u.locked);
       setConditionalRules(u.conditionalRules);
       setCardStyle(u.style.card);
@@ -256,7 +355,6 @@ export function TableWidgetConfiguration(props: TableWidgetConfigurationProps) {
 
   function emit(overrides?: Partial<{
     title: string; rows: number; columns: number;
-    widgetWidth: number; widgetHeight: number;
     locked: boolean;
     conditionalRules: ConditionalRule[];
     cellBindings: CellBinding[];
@@ -274,8 +372,6 @@ export function TableWidgetConfiguration(props: TableWidgetConfigurationProps) {
       title:             overrides?.title             ?? title,
       rows:              overrides?.rows              ?? rows,
       columns:           overrides?.columns           ?? columns,
-      widgetWidth:       overrides?.widgetWidth       ?? widgetWidth,
-      widgetHeight:      overrides?.widgetHeight      ?? widgetHeight,
       locked:            overrides?.locked            ?? locked,
       conditionalRules:  overrides?.conditionalRules  ?? conditionalRules,
       cellBindings:      overrides?.cellBindings      ?? cellBindings,
@@ -306,8 +402,15 @@ export function TableWidgetConfiguration(props: TableWidgetConfigurationProps) {
       cells:            passthrough.cells,
       columnWidths:     passthrough.columnWidths,
       rowHeights:       passthrough.rowHeights,
-      widgetWidth:      resolved.widgetWidth,
-      widgetHeight:     resolved.widgetHeight,
+      // Owned by the widget's own Table Settings menu — pass it through, never
+      // rebuild it here, or every configurator edit would reset the operator's
+      // scroll choice.
+      lockedHorizontalScroll: passthrough.lockedHorizontalScroll,
+      // The widget fills whatever container the host gives it, so there is no
+      // size form any more; the keys stay in the envelope (the dev harness
+      // sizes its preview box from them) and ride through untouched.
+      widgetWidth:      passthrough.widgetWidth,
+      widgetHeight:     passthrough.widgetHeight,
       locked:           resolved.locked,
       conditionalRules: resolved.conditionalRules,
       cellBindings:     resolved.cellBindings,
@@ -406,7 +509,7 @@ export function TableWidgetConfiguration(props: TableWidgetConfigurationProps) {
 
   // ── Conditional rule helpers ───────────────────────────────────────────────
 
-  function addRule() {
+  function addRule(): string {
     const rule: ConditionalRule = {
       id: `rule_${Date.now()}`,
       enabled: true,
@@ -419,6 +522,7 @@ export function TableWidgetConfiguration(props: TableWidgetConfigurationProps) {
     const next = [...conditionalRules, rule];
     setConditionalRules(next);
     emit({ conditionalRules: next });
+    return rule.id;
   }
 
   function updateRule(id: string, patch: Partial<ConditionalRule>) {
@@ -540,31 +644,67 @@ export function TableWidgetConfiguration(props: TableWidgetConfigurationProps) {
     updateRowFilter({ filters: rowFilter.filters.filter((f) => f.id !== id) });
   }
 
-  function openFilterModal(e: React.MouseEvent, filter?: RowFilterItem) {
-    e.stopPropagation();
+  // Both panels stay interactive (the overlay backdrop is transparent), so the
+  // entry being edited can be deleted from the list behind the editor. Close
+  // the second panel when its subject disappears rather than leaving an empty
+  // form pointing at nothing.
+  useEffect(() => {
+    if (!detail) return;
+    const gone =
+      (detail.kind === 'binding' && !cellBindings[detail.index]) ||
+      (detail.kind === 'series'  && !seriesBindings[detail.index]) ||
+      (detail.kind === 'rule'    && !conditionalRules.some((r) => r.id === detail.id)) ||
+      (detail.kind === 'filter'  && detail.id !== null && !rowFilter.filters.some((f) => f.id === detail.id));
+    if (gone) closeDetail();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [detail, cellBindings, seriesBindings, conditionalRules, rowFilter.filters]);
+
+  // Anchor the second panel to the right edge of this one, top-aligned.
+  function openDetail(pane: DetailPane, e?: React.MouseEvent) {
+    e?.stopPropagation();
     if (configRef.current) {
       const rect = configRef.current.getBoundingClientRect();
-      setFilterModalX(rect.right + 30);
-      setFilterModalY(rect.top);
+      setDetailX(rect.right + 30);
+      setDetailY(rect.top);
     }
-    setEditingFilterId(filter?.id ?? null);
-    setFilterNameInput(filter?.name ?? '');
-    setFilterColorInput(filter?.color ?? '#0073ea');
-    setFilterIconInput(filter?.icon ?? DEFAULT_ROW_FILTER_ICON);
-    setFilterNameError('');
-    setIsFilterModalOpen(true);
+    if (pane.kind === 'filter') {
+      const filter = pane.id ? rowFilter.filters.find((f) => f.id === pane.id) : undefined;
+      setFilterNameInput(filter?.name ?? '');
+      setFilterColorInput(filter?.color ?? '#0073ea');
+      setFilterIconInput(filter?.icon ?? DEFAULT_ROW_FILTER_ICON);
+      setFilterNameError('');
+    }
+    setDetail(pane);
   }
 
-  function closeFilterModal() {
-    setIsFilterModalOpen(false);
-    setEditingFilterId(null);
+  function closeDetail() {
+    setDetail(null);
     setFilterNameInput('');
     setFilterColorInput('#0073ea');
     setFilterIconInput(DEFAULT_ROW_FILTER_ICON);
     setFilterNameError('');
   }
 
-  function submitFilterModal() {
+  // Add a binding / series / rule and open its editor in one step, so a new
+  // entry is never left as a blank row the user has to find and click.
+  function addBindingAndEdit() {
+    addBinding();
+    openDetail({ kind: 'binding', index: cellBindings.length });
+  }
+
+  function addSeriesAndEdit() {
+    addSeries();
+    openDetail({ kind: 'series', index: seriesBindings.length });
+  }
+
+  function addRuleAndEdit() {
+    const id = addRule();
+    openDetail({ kind: 'rule', id });
+  }
+
+  function submitFilterDetail() {
+    if (detail?.kind !== 'filter') return;
+    const editingFilterId = detail.id;
     const name = filterNameInput.trim();
     if (!name) { setFilterNameError('Name is required'); return; }
     const isDuplicate = rowFilter.filters.some(
@@ -579,843 +719,807 @@ export function TableWidgetConfiguration(props: TableWidgetConfigurationProps) {
       : [...rowFilter.filters, { id: `filter_${Date.now()}`, name, color: filterColorInput, icon: filterIconInput }];
 
     updateRowFilter({ filters: next });
-    closeFilterModal();
+    closeDetail();
   }
+
+
+  const editingBinding = detail?.kind === 'binding' ? cellBindings[detail.index] : undefined;
+  const editingSeries  = detail?.kind === 'series'  ? seriesBindings[detail.index] : undefined;
+  const editingRule    = detail?.kind === 'rule'    ? conditionalRules.find((r) => r.id === detail.id) : undefined;
+
+  const detailTitle =
+    detail?.kind === 'binding' ? 'Cell Binding'
+    : detail?.kind === 'series' ? 'Series Population'
+    : detail?.kind === 'rule'   ? 'Formatting Rule'
+    : detail?.kind === 'filter' ? (detail.id ? 'Edit Filter' : 'Add Filter')
+    : '';
 
   return (
     <div className="wt-config" ref={configRef}>
-      <div className="wt-config__header">
-        {onBack && (
-          <Button
-            iconOnly
-            leadingIcon={<ArrowLeft size={16} />}
-            variant="Gray"
-            size="Small"
-            aria-label="Back"
-            onClick={() => onBack()}
-          />
-        )}
-        <span className="wt-config__title LabelMediumDefault">TableWidget</span>
-      </div>
+      {onBack && (
+        <div className="wt-config__header">
+          <IconAction icon={<ArrowLeft size={16} />} label="Back" onClick={() => onBack()} />
+        </div>
+      )}
 
-      {/* ── Tab bar ── */}
-      <div className="wt-config__tabs">
-        <button
-          className={`wt-config__tab${activeTab === 'general' ? ' wt-config__tab--active' : ''}`}
-          onClick={() => setActiveTab('general')}
-        >General</button>
-        <button
-          className={`wt-config__tab${activeTab === 'style' ? ' wt-config__tab--active' : ''}`}
-          onClick={() => setActiveTab('style')}
-        >Style</button>
-        <button
-          className={`wt-config__tab${activeTab === 'filter' ? ' wt-config__tab--active' : ''}`}
-          onClick={() => setActiveTab('filter')}
-        >Filter</button>
-      </div>
+      <Tabs
+        value={activeTab}
+        onChange={(value: string) => setActiveTab(value as typeof activeTab)}
+        variant="Bordered"
+        size="Medium"
+        isFullWidthTabItem
+      >
+        <TabItem value="data"   label="Data"   leadingItem={<TabsLeadingItem leading="Icon" size="16" icon={<Database size={16} />} />} />
+        <TabItem value="style"  label="Style"  leadingItem={<TabsLeadingItem leading="Icon" size="16" icon={<Droplet size={16} />} />} />
+        <TabItem value="filter" label="Filter" leadingItem={<TabsLeadingItem leading="Icon" size="16" icon={<Filter size={16} />} />} />
+      </Tabs>
 
-      {activeTab === 'general' ? (
+      {activeTab === 'data' ? (
 
         <div className="wt-config__body">
-          <TextInput
-            label="Widget Title"
-            placeholder="Enter title (leave empty to hide)"
-            value={title}
-            onChange={({ value }: { name: string; value: string }) => {
-              setTitle(value);
-              emitTitleDebounced();
-            }}
-          />
+          <Accordion mode="single" defaultExpandedKeys={['table']}>
 
-          <p className="wt-config__section-title">Grid Size</p>
+            <AccordionItem value="table" title="Table" leading="Icon" leadingIcon={<Grid size={18} />}>
+              <div className="wt-section">
 
-          <div className={`wt-config__row${locked ? ' wt-config__row--disabled' : ''}`}>
-            <CounterInput
-              label="Rows"
-              value={rows}
-              min={1}
-              max={100}
-              step={1}
-              isDisabled={locked}
-              onChange={({ value }: { name: string; value: number | null }) => {
-                if (locked) return;
-                const next = value ?? 1;
-                setRows(next);
-                emit({ rows: next });
-              }}
-            />
+                <TextInput
+                  label="Title"
+                  placeholder="Leave empty to hide"
+                  value={title}
+                  onChange={({ value }: { name: string; value: string }) => {
+                    setTitle(value);
+                    emitTitleDebounced();
+                  }}
+                />
 
-            <CounterInput
-              label="Columns"
-              value={columns}
-              min={1}
-              max={50}
-              step={1}
-              isDisabled={locked}
-              onChange={({ value }: { name: string; value: number | null }) => {
-                if (locked) return;
-                const next = value ?? 1;
-                setColumns(next);
-                emit({ columns: next });
-              }}
-            />
-          </div>
+                <div className={`wt-config__row${locked ? ' wt-config__row--disabled' : ''}`}>
+                  <CounterInput
+                    className="wt-counter--plain"
+                    label="Rows"
+                    value={rows}
+                    min={1}
+                    max={100}
+                    step={1}
+                    isDisabled={locked}
+                    onChange={({ value }: { name: string; value: number | null }) => {
+                      if (locked) return;
+                      const next = value ?? 1;
+                      setRows(next);
+                      emit({ rows: next });
+                    }}
+                  />
+                  <CounterInput
+                    className="wt-counter--plain"
+                    label="Columns"
+                    value={columns}
+                    min={1}
+                    max={50}
+                    step={1}
+                    isDisabled={locked}
+                    onChange={({ value }: { name: string; value: number | null }) => {
+                      if (locked) return;
+                      const next = value ?? 1;
+                      setColumns(next);
+                      emit({ columns: next });
+                    }}
+                  />
+                </div>
 
-          <p className="wt-config__section-title">Widget Size</p>
+                <ToggleRow
+                  label="Lock table layout"
+                  checked={locked}
+                  onChange={(next) => { setLocked(next); emit({ locked: next }); }}
+                />
 
-          <div className="wt-config__row">
-            <CounterInput
-              label="Width (px)"
-              value={widgetWidth}
-              min={200}
-              max={3000}
-              step={10}
-              onChange={({ value }: { name: string; value: number | null }) => {
-                const next = value ?? 700;
-                setWidgetWidth(next);
-                emit({ widgetWidth: next });
-              }}
-            />
-            <CounterInput
-              label="Height (px)"
-              value={widgetHeight}
-              min={200}
-              max={3000}
-              step={10}
-              onChange={({ value }: { name: string; value: number | null }) => {
-                const next = value ?? 500;
-                setWidgetHeight(next);
-                emit({ widgetHeight: next });
-              }}
-            />
-          </div>
+              </div>
+            </AccordionItem>
 
-          <p className="wt-config__hint">
-            The size the widget asks for. A dashboard tile that gives it less room wins — the table
-            scrolls inside whatever space it actually gets.
-          </p>
+            <AccordionItem value="values" title="Value Format" leading="Icon" leadingIcon={<Hash size={18} />}>
+              <div className="wt-section">
 
-          {/* ── Lock table layout ── */}
-          <ToggleRow
-            label="Lock table layout"
-            hint="Read-only view: no cell editing, resizing or row/column changes. Rows and columns are scaled to fill the widget exactly, leaving no empty background."
-            checked={locked}
-            onChange={(next) => { setLocked(next); emit({ locked: next }); }}
-          />
+                <CounterInput
+                  label="Decimal places"
+                  value={dataPrecision ?? 0}
+                  min={0}
+                  max={10}
+                  step={1}
+                  isDisabled={dataPrecision === null}
+                  onChange={({ value }: { name: string; value: number | null }) => {
+                    const next = value ?? 0;
+                    setDataPrecision(next);
+                    emit({ dataPrecision: next });
+                  }}
+                />
 
-          {/* ── Data display ── */}
-          <p className="wt-config__section-title">Data Display</p>
-
-          <div className="wt-config__row">
-            <CounterInput
-              label="Decimal places"
-              value={dataPrecision ?? 0}
-              min={0}
-              max={10}
-              step={1}
-              isDisabled={dataPrecision === null}
-              onChange={({ value }: { name: string; value: number | null }) => {
-                const next = value ?? 0;
-                setDataPrecision(next);
-                emit({ dataPrecision: next });
-              }}
-            />
-            <div className="wt-config__field">
-              <span className="wt-config__label BodySmallDefault">Rounding</span>
-              <div className="wt-seg-group">
-                {([
-                  { value: false, label: 'Fixed' },
-                  { value: true,  label: 'Full' },
-                ] as { value: boolean; label: string }[]).map(({ value, label }) => (
-                  <button
-                    key={label}
-                    className={`wt-seg-btn${(dataPrecision === null) === value ? ' wt-seg-btn--active' : ''}`}
-                    onClick={() => {
-                      const next = value ? null : 2;
+                <Field label="Rounding">
+                  <SwitchButtonGroup
+                    value={dataPrecision === null ? 'full' : 'fixed'}
+                    onChange={({ value }: { value: string | null }) => {
+                      const next = value === 'full' ? null : 2;
                       setDataPrecision(next);
                       emit({ dataPrecision: next });
                     }}
-                  >{label}</button>
-                ))}
-              </div>
-            </div>
-          </div>
-          <p className="wt-config__hint">
-            Applies to every numeric cell. “Full” keeps the value exactly as the topic returned it;
-            a cell can still override this from the table toolbar.
-          </p>
+                  >
+                    <SwitchButtonBase type="Text" value="fixed" label="Fixed" />
+                    <SwitchButtonBase type="Text" value="full"  label="Full" />
+                  </SwitchButtonGroup>
+                </Field>
 
-          <div className="wt-config__field">
-            <span className="wt-config__label BodySmallDefault">Timestamps</span>
-            <div className="wt-seg-group">
-              {([
-                { value: 'local', label: 'Local time' },
-                { value: 'utc',   label: 'Global (UTC)' },
-              ] as { value: TimeDisplayMode; label: string }[]).map(({ value, label }) => (
-                <button
-                  key={value}
-                  className={`wt-seg-btn${timeDisplay === value ? ' wt-seg-btn--active' : ''}`}
-                  onClick={() => {
-                    setTimeDisplay(value);
-                    emit({ timeDisplay: value });
-                  }}
-                >{label}</button>
-              ))}
-            </div>
-          </div>
-          <p className="wt-config__hint">
-            Which clock series buckets are cut and labelled against. “Global” reads the same for every
-            viewer regardless of their browser timezone.
-          </p>
-
-          {/* ── Conditional Formatting ── */}
-          <div className="wt-cf-section-head">
-            <p className="wt-config__section-title" style={{ margin: 0 }}>Conditional Formatting</p>
-            <button className="wt-cf-add-icon-btn" title="Add rule" onClick={addRule}>
-              <Plus size={14} />
-            </button>
-          </div>
-
-          {conditionalRules.length === 0 && (
-            <p className="wt-config__hint">No rules yet. Click ＋ to add a formatting rule.</p>
-          )}
-
-          {conditionalRules.map((rule, idx) => (
-            <div key={rule.id} className={`wt-cf-rule${rule.enabled ? '' : ' wt-cf-rule--disabled'}`}>
-
-              {/* ── Header ── */}
-              <div className="wt-cf-rule__head">
-                <label className="wt-cf-rule__label">
-                  <input
-                    type="checkbox"
-                    className="wt-cf-rule__checkbox"
-                    checked={rule.enabled}
-                    onChange={(e) => updateRule(rule.id, { enabled: e.target.checked })}
-                  />
-                  <span className="wt-cf-rule__title">Rule {idx + 1}</span>
-                </label>
-                <div className="wt-cf-rule__actions">
-                  <button className="wt-cf-icon-btn" title="Move up"   disabled={idx === 0}                          onClick={() => moveRule(rule.id, 'up')}>  <ChevronUp   size={11} /></button>
-                  <button className="wt-cf-icon-btn" title="Move down" disabled={idx === conditionalRules.length - 1} onClick={() => moveRule(rule.id, 'down')}><ChevronDown size={11} /></button>
-                  <button className="wt-cf-icon-btn wt-cf-icon-btn--danger" title="Delete" onClick={() => removeRule(rule.id)}><X size={11} /></button>
-                </div>
-              </div>
-
-              {/* ── Body ── */}
-              <div className="wt-cf-rule__body">
-
-                {/* Range + Condition on one row */}
-                <div className="wt-cf-rule__2col">
-                  <div className="wt-cf-rule__field">
-                    <TextInput
-                      label="Range"
-                      placeholder="All cells"
-                      value={rangeInputs[rule.id] ?? rangeToString(rule.range)}
-                      onChange={({ value }: { name: string; value: string }) => {
-                        setRangeInputs((prev) => ({ ...prev, [rule.id]: value }));
-                        // Commit only empty (= all cells) or a valid range —
-                        // an in-progress/invalid string must never silently
-                        // become range:null and apply the rule everywhere.
-                        if (value.trim() === '') {
-                          setRuleRangeErrors((prev) => ({ ...prev, [rule.id]: '' }));
-                          updateRuleDebounced(rule.id, { range: null });
-                          return;
-                        }
-                        const parsed = parseRangeString(value);
-                        if (!parsed) {
-                          setRuleRangeErrors((prev) => ({ ...prev, [rule.id]: 'Invalid range — e.g. A1 or B2:D5' }));
-                          return;
-                        }
-                        setRuleRangeErrors((prev) => ({ ...prev, [rule.id]: '' }));
-                        updateRuleDebounced(rule.id, { range: parsed });
-                      }}
-                    />
-                    {ruleRangeErrors[rule.id] ? (
-                      <p className="wt-cf-range-error">{ruleRangeErrors[rule.id]}</p>
-                    ) : null}
-                  </div>
-                  <div className="wt-cf-rule__field">
-                    <SelectInput
-                      label="Condition"
-                      value={CONDITION_LABELS[rule.condition]}
-                      isOpen={openConditionRuleId === rule.id}
-                      onClick={() => setOpenConditionRuleId((id) => (id === rule.id ? null : rule.id))}
-                    >
-                      {openConditionRuleId === rule.id && (
-                        <DropdownMenu>
-                          {(Object.keys(CONDITION_LABELS) as ConditionalRuleCondition[]).map((c) => (
-                            <ActionListItem
-                              key={c}
-                              title={CONDITION_LABELS[c]}
-                              isSelected={rule.condition === c}
-                              onClick={() => {
-                                updateRule(rule.id, { condition: c });
-                                setOpenConditionRuleId(null);
-                              }}
-                            />
-                          ))}
-                        </DropdownMenu>
-                      )}
-                    </SelectInput>
-                  </div>
-                </div>
-
-                {/* Value inputs */}
-                {NEEDS_VALUE1.includes(rule.condition) && (
-                  <div className="wt-cf-rule__2col">
-                    <div className="wt-cf-rule__field">
-                      <TextInput
-                        label={rule.condition === 'between' ? 'Min' : 'Value'}
-                        placeholder="0"
-                        value={rule.value1}
-                        onChange={({ value }: { name: string; value: string }) =>
-                          updateRuleDebounced(rule.id, { value1: value })
-                        }
-                      />
-                    </div>
-                    {rule.condition === 'between' ? (
-                      <div className="wt-cf-rule__field">
-                        <TextInput
-                          label="Max"
-                          placeholder="100"
-                          value={rule.value2}
-                          onChange={({ value }: { name: string; value: string }) =>
-                            updateRuleDebounced(rule.id, { value2: value })
-                          }
-                        />
-                      </div>
-                    ) : <div />}
-                  </div>
-                )}
-
-                {/* Format strip */}
-                <div className="wt-cf-rule__format-strip">
-                  <span className="wt-cf-label">Format</span>
-
-                  <Button
-                    iconOnly
-                    aria-label="Bold matching cells"
-                    leadingIcon={<Bold size={12} />}
-                    variant={rule.format.bold ? 'Primary' : 'Gray'}
-                    size="XSmall"
-                    onClick={() => updateRule(rule.id, { format: { ...rule.format, bold: !rule.format.bold } })}
-                  />
-                  <Button
-                    iconOnly
-                    aria-label="Italicise matching cells"
-                    leadingIcon={<Italic size={12} />}
-                    variant={rule.format.italic ? 'Primary' : 'Gray'}
-                    size="XSmall"
-                    onClick={() => updateRule(rule.id, { format: { ...rule.format, italic: !rule.format.italic } })}
-                  />
-
-                  <div className="wt-cf-color-pair">
-                    <span className="wt-cf-color-pair__label">Bg</span>
-                    <ColorInput
-                      value={rule.format.cellColor || '#ffffff'}
-                      onChange={(color: string) =>
-                        updateRule(rule.id, { format: { ...rule.format, cellColor: color } })
-                      }
-                    />
-                  </div>
-
-                  <div className="wt-cf-color-pair">
-                    <span className="wt-cf-color-pair__label">Text</span>
-                    <ColorInput
-                      value={rule.format.textColor || '#1a1a1a'}
-                      onChange={(color: string) =>
-                        updateRule(rule.id, { format: { ...rule.format, textColor: color } })
-                      }
-                    />
-                  </div>
-                </div>
-
-              </div>
-            </div>
-          ))}
-
-          {/* ── Data Bindings ── */}
-          <div className="wt-cf-section-head">
-            <p className="wt-config__section-title" style={{ margin: 0 }}>Data Bindings</p>
-            <button className="wt-cf-add-icon-btn" title="Add binding" onClick={addBinding}>
-              <Plus size={14} />
-            </button>
-          </div>
-
-          {cellBindings.length === 0 && (
-            <p className="wt-config__hint">No bindings. Click ＋ to bind a cell to a UNS topic.</p>
-          )}
-
-          {cellBindings.map((binding, idx) => (
-            <div key={idx} className="wt-binding-row">
-              <div className="wt-binding-row__cell">
-                <TextInput
-                  label="Cell"
-                  placeholder="e.g. A1"
-                  value={cellRefInputs[idx] ?? (binding.cellId ? cellIdToRef(binding.cellId) : '')}
-                  onChange={({ value }: { name: string; value: string }) => {
-                    setCellRefInputs(prev => ({ ...prev, [idx]: value }));
-                    try {
-                      const cellId = refToCellId(value);
-                      updateBinding(idx, { cellId });
-                    } catch { /* invalid ref — wait for more input */ }
-                  }}
-                />
-              </div>
-              <div className="wt-binding-row__topic">
-                <UNSTreePicker
-                  label="UNS Topic"
-                  placeholder="Select a topic…"
-                  value={binding.topic}
-                  workspaces={unsWorkspaces}
-                  isLoadingWorkspaces={isLoadingWs}
-                  loadChildren={loadChildren}
-                  searchNodes={searchNodes}
-                  onOpen={loadWorkspaces}
-                  onChange={(value) => updateBinding(idx, { topic: value })}
-                />
-              </div>
-              <button
-                className="wt-cf-icon-btn wt-cf-icon-btn--danger wt-binding-row__remove"
-                title="Remove binding"
-                onClick={() => removeBinding(idx)}
-              >
-                <X size={11} />
-              </button>
-            </div>
-          ))}
-
-          {/* ── Series Population ── */}
-          <div className="wt-cf-section-head">
-            <p className="wt-config__section-title" style={{ margin: 0 }}>Series Population</p>
-            <button className="wt-cf-add-icon-btn" title="Add series" onClick={addSeries}>
-              <Plus size={14} />
-            </button>
-          </div>
-
-          <p className="wt-config__hint">
-            A series binds ONE topic that resolves to a list of time buckets and spreads it from a
-            base cell — down the rows or across the columns. Bucket size comes from the dashboard
-            periodicity; “Max cells” caps how many buckets are written, and the grid itself caps the
-            rest.
-          </p>
-
-          {seriesBindings.length === 0 && (
-            <p className="wt-config__hint">
-              No series. Click ＋ to spread an array topic from a base cell across rows or columns.
-            </p>
-          )}
-
-          {seriesBindings.map((series, idx) => (
-            <div key={series.id} className="wt-series-item">
-              <div className="wt-binding-row">
-                <div className="wt-binding-row__cell">
-                  <TextInput
-                    label="Base cell"
-                    placeholder="e.g. A1"
-                    value={seriesRefInputs[idx] ?? (series.baseCellId ? cellIdToRef(series.baseCellId) : '')}
-                    onChange={({ value }: { name: string; value: string }) => {
-                      setSeriesRefInputs(prev => ({ ...prev, [idx]: value }));
-                      try {
-                        const baseCellId = refToCellId(value);
-                        updateSeries(idx, { baseCellId });
-                      } catch { /* invalid ref — wait for more input */ }
+                <Field label="Timestamps">
+                  <SwitchButtonGroup
+                    value={timeDisplay}
+                    onChange={({ value }: { value: string | null }) => {
+                      const next = (value ?? 'local') as TimeDisplayMode;
+                      setTimeDisplay(next);
+                      emit({ timeDisplay: next });
                     }}
-                  />
-                </div>
-                <div className="wt-binding-row__topic">
-                  <UNSTreePicker
-                    label="Array topic"
-                    placeholder="Select a topic…"
-                    value={series.topic}
-                    workspaces={unsWorkspaces}
-                    isLoadingWorkspaces={isLoadingWs}
-                    loadChildren={loadChildren}
-                    searchNodes={searchNodes}
-                    onOpen={loadWorkspaces}
-                    onChange={(value) => updateSeries(idx, { topic: value })}
-                  />
-                </div>
-                <button
-                  className="wt-cf-icon-btn wt-cf-icon-btn--danger wt-binding-row__remove"
-                  title="Remove series"
-                  onClick={() => removeSeries(idx)}
-                >
-                  <X size={11} />
-                </button>
-              </div>
+                  >
+                    <SwitchButtonBase type="Text" value="local" label="Local" />
+                    <SwitchButtonBase type="Text" value="utc"   label="UTC" />
+                  </SwitchButtonGroup>
+                </Field>
 
-              <div className="wt-series-item__controls">
-                <div className="wt-series-item__direction">
-                  <span className="wt-config__label BodySmallDefault">Direction</span>
-                  <div className="wt-seg-group">
-                    {([
-                      { value: 'vertical',   label: 'Down',   icon: <ArrowDown size={11} /> },
-                      { value: 'horizontal', label: 'Across',  icon: <ArrowRight size={11} /> },
-                    ] as { value: SeriesDirection; label: string; icon: React.ReactNode }[]).map(({ value, label, icon }) => (
-                      <button
-                        key={value}
-                        className={`wt-seg-btn${series.direction === value ? ' wt-seg-btn--active' : ''}`}
-                        onClick={() => updateSeries(idx, { direction: value })}
-                      >
-                        <span className="wt-series-item__seg-content">{icon}{label}</span>
-                      </button>
-                    ))}
-                  </div>
-                </div>
-                <div className="wt-series-item__limit">
-                  <CounterInput
-                    label="Max cells (0 = all)"
-                    value={series.limit}
-                    min={0}
-                    max={1000}
-                    step={1}
-                    onChange={({ value }: { name: string; value: number | null }) =>
-                      updateSeries(idx, { limit: value ?? 0 })
+              </div>
+            </AccordionItem>
+
+            <AccordionItem value="bindings" title="Cell Bindings" leading="Icon" leadingIcon={<Link2 size={18} />}>
+              <div className="wt-section">
+
+                {cellBindings.map((binding, idx) => (
+                  <ListRow
+                    key={idx}
+                    onEdit={() => openDetail({ kind: 'binding', index: idx })}
+                    actions={
+                      <IconAction
+                        icon={<X size={12} />}
+                        label="Remove binding"
+                        onClick={() => removeBinding(idx)}
+                      />
                     }
-                  />
-                </div>
+                  >
+                    <RefChip text={binding.cellId ? cellIdToRef(binding.cellId) : ''} />
+                    <span className="wt-item__text">{topicLeaf(binding.topic)}</span>
+                  </ListRow>
+                ))}
+
+                <Button
+                  variant="Secondary"
+                  size="Small"
+                  label="Add binding"
+                  leadingIcon={<Plus size={13} />}
+                  isFullWidth
+                  onClick={addBindingAndEdit}
+                />
+
               </div>
+            </AccordionItem>
 
-              <p className="wt-config__hint wt-series-item__span">{describeSeriesSpan(series, rows, columns)}</p>
-            </div>
-          ))}
+            <AccordionItem value="series" title="Series Population" leading="Icon" leadingIcon={<TrendingUp size={18} />}>
+              <div className="wt-section">
 
+                {seriesBindings.map((series, idx) => (
+                  <ListRow
+                    key={series.id}
+                    onEdit={() => openDetail({ kind: 'series', index: idx })}
+                    actions={
+                      <IconAction
+                        icon={<X size={12} />}
+                        label="Remove series"
+                        onClick={() => removeSeries(idx)}
+                      />
+                    }
+                  >
+                    <RefChip text={series.baseCellId ? cellIdToRef(series.baseCellId) : ''} />
+                    <span className="wt-item__icon">
+                      {series.direction === 'vertical' ? <ArrowDown size={12} /> : <ArrowRight size={12} />}
+                    </span>
+                    <span className="wt-item__text">{topicLeaf(series.topic)}</span>
+                  </ListRow>
+                ))}
+
+                <Button
+                  variant="Secondary"
+                  size="Small"
+                  label="Add series"
+                  leadingIcon={<Plus size={13} />}
+                  isFullWidth
+                  onClick={addSeriesAndEdit}
+                />
+
+              </div>
+            </AccordionItem>
+
+          </Accordion>
         </div>
 
       ) : activeTab === 'style' ? (
 
         <div className="wt-config__body">
+          <Accordion mode="single" defaultExpandedKeys={['table']}>
 
-          {/* ── Table section ── */}
-          <div className="wt-style-section">
-            <div className="wt-style-section__head">
-              <Grid size={13} />
-              <span>Table</span>
-            </div>
-            <div className="wt-style-section__body">
+            <AccordionItem value="table" title="Table" leading="Icon" leadingIcon={<Layout size={18} />}>
+              <div className="wt-section">
 
-              {/* Grid borders */}
-              <div className="wt-config__field">
-                <span className="wt-config__label BodySmallDefault">Grid lines</span>
-                <div className="wt-seg-group">
-                  {([
-                    { value: 'none',    label: 'None' },
-                    { value: 'rows',    label: 'Rows' },
-                    { value: 'columns', label: 'Cols' },
-                    { value: 'all',     label: 'All' },
-                  ] as { value: TableBorderStyle; label: string }[]).map(({ value, label }) => (
-                    <button
-                      key={value}
-                      className={`wt-seg-btn${tableBorderStyle === value ? ' wt-seg-btn--active' : ''}`}
-                      onClick={() => {
-                        setTableBorderStyle(value);
-                        emit({ tableBorderStyle: value });
-                      }}
-                    >{label}</button>
-                  ))}
-                </div>
-              </div>
+                <Field label="Grid lines">
+                  <SwitchButtonGroup
+                    value={tableBorderStyle}
+                    onChange={({ value }: { value: string | null }) => {
+                      const next = (value ?? 'all') as TableBorderStyle;
+                      setTableBorderStyle(next);
+                      emit({ tableBorderStyle: next });
+                    }}
+                  >
+                    <SwitchButtonBase type="Icon" value="none"    icon={<Square size={16} />}  accessibilityLabel="No grid lines"   title="No grid lines" />
+                    <SwitchButtonBase type="Icon" value="rows"    icon={<Menu size={16} />}    accessibilityLabel="Row lines only"  title="Row lines only" />
+                    <SwitchButtonBase type="Icon" value="columns" icon={<Columns size={16} />} accessibilityLabel="Column lines only" title="Column lines only" />
+                    <SwitchButtonBase type="Icon" value="all"     icon={<Grid size={16} />}    accessibilityLabel="All grid lines"  title="All grid lines" />
+                  </SwitchButtonGroup>
+                </Field>
 
-              <ToggleRow
-                label="Wrap in card"
-                hint="Add a visible border around the widget"
-                checked={cardStyle.wrapInCard}
-                onChange={(next) => updateCardStyle({ wrapInCard: next })}
-              />
+                <ColorInput
+                  label="Background"
+                  value={cardStyle.bg || '#ffffff'}
+                  onChange={(c: string) => updateCardStyle({ bg: c })}
+                />
 
-              <ToggleRow
-                label="Show download button"
-                hint="Display the CSV download icon in the header"
-                checked={showExportButton}
-                onChange={(next) => { setShowExportButton(next); emit({ showExportButton: next }); }}
-              />
+                <ToggleRow
+                  label="Show search"
+                  checked={showSearch}
+                  onChange={(next) => { setShowSearch(next); emit({ showSearch: next }); }}
+                />
 
-              <ToggleRow
-                label="Show search"
-                hint="Search the table from its header and step through matches"
-                checked={showSearch}
-                onChange={(next) => { setShowSearch(next); emit({ showSearch: next }); }}
-              />
+                <ToggleRow
+                  label="Allow CSV download"
+                  checked={showExportButton}
+                  onChange={(next) => { setShowExportButton(next); emit({ showExportButton: next }); }}
+                />
 
-              {/* Background — always visible */}
-              <ColorInput
-                label="Background"
-                value={cardStyle.bg || '#ffffff'}
-                onChange={(c: string) => updateCardStyle({ bg: c })}
-              />
+                <ToggleRow
+                  label="Wrap in card"
+                  checked={cardStyle.wrapInCard}
+                  onChange={(next) => updateCardStyle({ wrapInCard: next })}
+                />
 
-              {cardStyle.wrapInCard && (
-                <>
-                  {/* Border color */}
-                  <ColorInput
-                    label="Border color"
-                    value={cardStyle.borderColor || '#e0e0e0'}
-                    onChange={(c: string) => updateCardStyle({ borderColor: c })}
-                  />
+                {cardStyle.wrapInCard && (
+                  <>
+                    <ColorInput
+                      label="Border color"
+                      value={cardStyle.borderColor || '#e0e0e0'}
+                      onChange={(c: string) => updateCardStyle({ borderColor: c })}
+                    />
 
-                  {/* Border width */}
-                  <div className="wt-config__field">
-                    <span className="wt-config__label BodySmallDefault">Border width</span>
-                    <div className="wt-seg-group">
-                      {([1, 2, 3] as const).map((w) => (
-                        <button
-                          key={w}
-                          className={`wt-seg-btn${cardStyle.borderWidth === w ? ' wt-seg-btn--active' : ''}`}
-                          onClick={() => updateCardStyle({ borderWidth: w })}
-                        >
-                          {w}px
-                        </button>
-                      ))}
+                    <Field label="Border width">
+                      <SwitchButtonGroup
+                        value={String(cardStyle.borderWidth)}
+                        onChange={({ value }: { value: string | null }) =>
+                          updateCardStyle({ borderWidth: Number(value ?? 1) })
+                        }
+                      >
+                        <SwitchButtonBase type="Text" value="1" label="1px" />
+                        <SwitchButtonBase type="Text" value="2" label="2px" />
+                        <SwitchButtonBase type="Text" value="3" label="3px" />
+                      </SwitchButtonGroup>
+                    </Field>
+
+                    <div className="wt-config__row">
+                      <CounterInput
+                        label="Radius"
+                        value={cardStyle.borderRadius}
+                        min={0}
+                        max={32}
+                        step={1}
+                        onChange={({ value }: { name: string; value: number | null }) =>
+                          updateCardStyle({ borderRadius: value ?? 0 })
+                        }
+                      />
+                      <CounterInput
+                        label="Padding"
+                        value={cardStyle.padding}
+                        min={0}
+                        max={64}
+                        step={4}
+                        onChange={({ value }: { name: string; value: number | null }) =>
+                          updateCardStyle({ padding: value ?? 0 })
+                        }
+                      />
                     </div>
-                  </div>
+                  </>
+                )}
 
-                  {/* Corner radius + Padding */}
-                  <div className="wt-config__row">
-                    <CounterInput
-                      label="Corner radius"
-                      value={cardStyle.borderRadius}
-                      min={0}
-                      max={32}
-                      step={1}
-                      onChange={({ value }: { name: string; value: number | null }) =>
-                        updateCardStyle({ borderRadius: value ?? 0 })
-                      }
-                    />
-                    <CounterInput
-                      label="Padding"
-                      value={cardStyle.padding}
-                      min={0}
-                      max={64}
-                      step={4}
-                      onChange={({ value }: { name: string; value: number | null }) =>
-                        updateCardStyle({ padding: value ?? 0 })
-                      }
-                    />
-                  </div>
-                </>
-              )}
-            </div>
-          </div>
-
-          {/* ── Title section ── */}
-          <div className="wt-style-section">
-            <div className="wt-style-section__head">
-              <Type size={13} />
-              <span>Title</span>
-            </div>
-            <div className="wt-style-section__body">
-
-              {/* Color */}
-              <ColorInput
-                label="Color"
-                value={titleStyle.color || '#1a1a1a'}
-                onChange={(c: string) => updateTitleStyle({ color: c })}
-              />
-
-              {/* Font size */}
-              <CounterInput
-                label="Font size"
-                value={titleStyle.fontSize}
-                min={10}
-                max={48}
-                step={1}
-                onChange={({ value }: { name: string; value: number | null }) =>
-                  updateTitleStyle({ fontSize: value ?? 16 })
-                }
-              />
-
-              {/* Alignment */}
-              <div className="wt-config__field">
-                <span className="wt-config__label BodySmallDefault">Alignment</span>
-                <div className="wt-seg-group">
-                  {([
-                    { value: 'left',   label: 'Left',   icon: <AlignLeft   size={12} /> },
-                    { value: 'center', label: 'Center', icon: <AlignCenter size={12} /> },
-                    { value: 'right',  label: 'Right',  icon: <AlignRight  size={12} /> },
-                  ] as { value: TitleAlign; label: string; icon: React.ReactNode }[]).map(({ value, label, icon }) => (
-                    <button
-                      key={value}
-                      className={`wt-seg-btn${titleStyle.align === value ? ' wt-seg-btn--active' : ''}`}
-                      title={label}
-                      onClick={() => updateTitleStyle({ align: value })}
-                    >
-                      <span className="wt-series-item__seg-content">{icon}{label}</span>
-                    </button>
-                  ))}
-                </div>
               </div>
+            </AccordionItem>
 
-              {/* Font weight */}
-              <div className="wt-config__field">
-                <span className="wt-config__label BodySmallDefault">Weight</span>
-                <div className="wt-seg-group">
-                  {(['regular', 'medium', 'bold'] as const).map((w) => (
-                    <button
-                      key={w}
-                      className={`wt-seg-btn${titleStyle.fontWeight === w ? ' wt-seg-btn--active' : ''}`}
-                      onClick={() => updateTitleStyle({ fontWeight: w })}
-                      style={{
-                        fontWeight: w === 'bold' ? 700 : w === 'medium' ? 500 : 400,
-                      }}
-                    >
-                      {w === 'regular' ? 'Regular' : w === 'medium' ? 'Medium' : 'Bold'}
-                    </button>
-                  ))}
-                </div>
+            <AccordionItem value="title" title="Title" leading="Icon" leadingIcon={<Type size={18} />}>
+              <div className="wt-section">
+
+                <ColorInput
+                  label="Color"
+                  value={titleStyle.color || '#1a1a1a'}
+                  onChange={(c: string) => updateTitleStyle({ color: c })}
+                />
+
+                <CounterInput
+                  label="Font size"
+                  value={titleStyle.fontSize}
+                  min={10}
+                  max={48}
+                  step={1}
+                  onChange={({ value }: { name: string; value: number | null }) =>
+                    updateTitleStyle({ fontSize: value ?? 16 })
+                  }
+                />
+
+                <Field label="Alignment">
+                  <SwitchButtonGroup
+                    value={titleStyle.align}
+                    onChange={({ value }: { value: string | null }) =>
+                      updateTitleStyle({ align: (value ?? 'left') as TitleAlign })
+                    }
+                  >
+                    <SwitchButtonBase type="Icon" value="left"   icon={<AlignLeft size={16} />}   accessibilityLabel="Align left"   title="Align left" />
+                    <SwitchButtonBase type="Icon" value="center" icon={<AlignCenter size={16} />} accessibilityLabel="Align center" title="Align center" />
+                    <SwitchButtonBase type="Icon" value="right"  icon={<AlignRight size={16} />}  accessibilityLabel="Align right"  title="Align right" />
+                  </SwitchButtonGroup>
+                </Field>
+
+                <SelectInput
+                  label="Weight"
+                  value={TITLE_WEIGHT_LABELS[titleStyle.fontWeight]}
+                  isOpen={isWeightOpen}
+                  onClick={() => setIsWeightOpen((v) => !v)}
+                >
+                  {isWeightOpen && (
+                    <DropdownMenu>
+                      {(Object.keys(TITLE_WEIGHT_LABELS) as TitleFontWeight[]).map((w) => (
+                        <ActionListItem
+                          key={w}
+                          title={TITLE_WEIGHT_LABELS[w]}
+                          isSelected={titleStyle.fontWeight === w}
+                          onClick={() => { updateTitleStyle({ fontWeight: w }); setIsWeightOpen(false); }}
+                        />
+                      ))}
+                    </DropdownMenu>
+                  )}
+                </SelectInput>
+
               </div>
+            </AccordionItem>
 
-            </div>
-          </div>
+            <AccordionItem value="conditional" title="Conditional Formatting" leading="Icon" leadingIcon={<Droplet size={18} />}>
+              <div className="wt-section">
 
+                {conditionalRules.map((rule, idx) => (
+                  <ListRow
+                    key={rule.id}
+                    muted={!rule.enabled}
+                    onEdit={() => openDetail({ kind: 'rule', id: rule.id })}
+                    actions={
+                      <>
+                        <IconAction
+                          icon={<ChevronUp size={12} />}
+                          label="Move rule up"
+                          isDisabled={idx === 0}
+                          onClick={() => moveRule(rule.id, 'up')}
+                        />
+                        <IconAction
+                          icon={<ChevronDown size={12} />}
+                          label="Move rule down"
+                          isDisabled={idx === conditionalRules.length - 1}
+                          onClick={() => moveRule(rule.id, 'down')}
+                        />
+                        <IconAction
+                          icon={<X size={12} />}
+                          label="Delete rule"
+                          onClick={() => removeRule(rule.id)}
+                        />
+                      </>
+                    }
+                  >
+                    <span
+                      className="wt-item__swatch"
+                      style={{ backgroundColor: rule.format.cellColor || 'transparent' }}
+                    />
+                    <span className="wt-item__text">{describeRule(rule)}</span>
+                  </ListRow>
+                ))}
+
+                <Button
+                  variant="Secondary"
+                  size="Small"
+                  label="Add rule"
+                  leadingIcon={<Plus size={13} />}
+                  isFullWidth
+                  onClick={addRuleAndEdit}
+                />
+
+              </div>
+            </AccordionItem>
+
+          </Accordion>
         </div>
 
       ) : (
 
         <div className="wt-config__body">
+          <Accordion mode="single" defaultExpandedKeys={['rowfilter']}>
 
-          <p className="wt-config__section-title">Range</p>
-          <TextInput
-            label="Column range"
-            placeholder="e.g. A2:A10"
-            value={rowFilterRangeInput}
-            onChange={({ value }: { name: string; value: string }) => updateRowFilterRange(value)}
-          />
-          {rowFilterRangeError && (
-            <p className="wt-config__hint wt-rowfilter-error">{rowFilterRangeError}</p>
-          )}
+            <AccordionItem value="rowfilter" title="Row Filter" leading="Icon" leadingIcon={<Filter size={18} />}>
+              <div className="wt-section">
 
-          <p className="wt-config__section-title">Filter Type</p>
-          <div className="wt-seg-group">
-            {([
-              { value: 'chips', label: 'Chips' },
-              { value: 'dropdown', label: 'Dropdown' },
-            ] as { value: RowFilterType; label: string }[]).map(({ value, label }) => (
-              <button
-                key={value}
-                className={`wt-seg-btn${rowFilter.filterType === value ? ' wt-seg-btn--active' : ''}`}
-                onClick={() => updateRowFilter({ filterType: value })}
-              >{label}</button>
-            ))}
-          </div>
+                <TextInput
+                  label="Column range"
+                  placeholder="e.g. A2:A10"
+                  value={rowFilterRangeInput}
+                  errorText={rowFilterRangeError || undefined}
+                  validationState={rowFilterRangeError ? 'error' : undefined}
+                  onChange={({ value }: { name: string; value: string }) => updateRowFilterRange(value)}
+                />
 
-          <ToggleRow
-            label="Show instance count"
-            hint="Display the number of matching rows next to each filter"
-            checked={rowFilter.enableCount}
-            onChange={(next) => updateRowFilter({ enableCount: next })}
-          />
+                <Field label="Filter type">
+                  <SwitchButtonGroup
+                    value={rowFilter.filterType}
+                    onChange={({ value }: { value: string | null }) =>
+                      updateRowFilter({ filterType: (value ?? 'chips') as RowFilterType })
+                    }
+                  >
+                    <SwitchButtonBase type="Text" value="chips"    label="Chips" />
+                    <SwitchButtonBase type="Text" value="dropdown" label="List" />
+                  </SwitchButtonGroup>
+                </Field>
 
-          <ToggleRow
-            label="Hide non-matching rows"
-            hint="Rows that don't match any filter are hidden. All filters are shown by default — deselect a chip to hide that category too"
-            checked={rowFilter.hideNonMatching}
-            onChange={(next) => updateRowFilter({ hideNonMatching: next })}
-          />
+                <ToggleRow
+                  label="Show instance count"
+                  checked={rowFilter.enableCount}
+                  onChange={(next) => updateRowFilter({ enableCount: next })}
+                />
 
-          <ToggleRow
-            label="Highlight matching rows (optional)"
-            hint="Tint a row with the active filter's color — can be used with or without hiding"
-            checked={rowFilter.enableColor}
-            onChange={(next) => updateRowFilter({ enableColor: next })}
-          />
+                <ToggleRow
+                  label="Hide non-matching rows"
+                  checked={rowFilter.hideNonMatching}
+                  onChange={(next) => updateRowFilter({ hideNonMatching: next })}
+                />
 
-          {/* ── Filters list ── */}
-          <div className="wt-cf-section-head">
-            <p className="wt-config__section-title" style={{ margin: 0 }}>Filters</p>
-            <button className="wt-cf-add-icon-btn" title="Add filter" onClick={(e) => openFilterModal(e)}>
-              <Plus size={14} />
-            </button>
-          </div>
+                <ToggleRow
+                  label="Highlight matching rows"
+                  checked={rowFilter.enableColor}
+                  onChange={(next) => updateRowFilter({ enableColor: next })}
+                />
 
-          {rowFilter.filters.length === 0 && (
-            <p className="wt-config__hint">No filters yet. Click ＋ to add one.</p>
-          )}
-
-          {rowFilter.filters.map((filter, idx) => {
-            const Icon = ROW_FILTER_ICONS[filter.icon];
-            return (
-              <div key={filter.id} className="wt-rowfilter-filter-row">
-                {Icon && (
-                  <span className="wt-rowfilter-filter-row__icon" style={{ color: filter.color }}>
-                    <Icon size={14} />
-                  </span>
-                )}
-                <span className="wt-rowfilter-filter-row__swatch" style={{ backgroundColor: filter.color }} />
-                <span className="wt-rowfilter-filter-row__name">{filter.name}</span>
-                <div className="wt-cf-rule__actions">
-                  <button className="wt-cf-icon-btn" title="Move up"   disabled={idx === 0}                          onClick={() => moveFilter(filter.id, 'up')}>  <ChevronUp   size={11} /></button>
-                  <button className="wt-cf-icon-btn" title="Move down" disabled={idx === rowFilter.filters.length - 1} onClick={() => moveFilter(filter.id, 'down')}><ChevronDown size={11} /></button>
-                  <button className="wt-cf-icon-btn" title="Edit filter" onClick={(e) => openFilterModal(e, filter)}><Edit2 size={11} /></button>
-                  <button className="wt-cf-icon-btn wt-cf-icon-btn--danger" title="Delete filter" onClick={() => removeFilter(filter.id)}><X size={11} /></button>
-                </div>
               </div>
-            );
-          })}
+            </AccordionItem>
 
+            <AccordionItem value="filters" title="Filters" leading="Icon" leadingIcon={<Tag size={18} />}>
+              <div className="wt-section">
+
+                {rowFilter.filters.map((filter, idx) => {
+                  const Icon = ROW_FILTER_ICONS[filter.icon];
+                  return (
+                    <ListRow
+                      key={filter.id}
+                      onEdit={() => openDetail({ kind: 'filter', id: filter.id })}
+                      actions={
+                        <>
+                          <IconAction
+                            icon={<ChevronUp size={12} />}
+                            label="Move filter up"
+                            isDisabled={idx === 0}
+                            onClick={() => moveFilter(filter.id, 'up')}
+                          />
+                          <IconAction
+                            icon={<ChevronDown size={12} />}
+                            label="Move filter down"
+                            isDisabled={idx === rowFilter.filters.length - 1}
+                            onClick={() => moveFilter(filter.id, 'down')}
+                          />
+                          <IconAction
+                            icon={<X size={12} />}
+                            label="Delete filter"
+                            onClick={() => removeFilter(filter.id)}
+                          />
+                        </>
+                      }
+                    >
+                      <span className="wt-item__icon" style={{ color: filter.color }}>
+                        {Icon ? <Icon size={13} /> : null}
+                      </span>
+                      <span className="wt-item__text">{filter.name}</span>
+                    </ListRow>
+                  );
+                })}
+
+                <Button
+                  variant="Secondary"
+                  size="Small"
+                  label="Add filter"
+                  leadingIcon={<Plus size={13} />}
+                  isFullWidth
+                  onClick={(e: React.MouseEvent) => openDetail({ kind: 'filter', id: null }, e)}
+                />
+
+              </div>
+            </AccordionItem>
+
+          </Accordion>
         </div>
       )}
 
-      {/* ── Add/Edit Filter modal (Configurator Overlay Pattern) ── */}
-      {isFilterModalOpen && (
+      {/* ── Second panel: nested editors (Configurator Overlay Pattern) ── */}
+      {detail && (
         <Modal
-          isOpen={isFilterModalOpen}
-          positionX={filterModalX}
-          positionY={filterModalY}
-          className="wt-rowfilter-modal"
-          onClose={closeFilterModal}
-          header={<ModalHeader title={editingFilterId ? 'Edit Filter' : 'Add Filter'} onClose={closeFilterModal} />}
+          isOpen
+          positionX={detailX}
+          positionY={detailY}
+          className="wt-detail-modal"
+          onClose={closeDetail}
+          header={<ModalHeader title={detailTitle} onClose={closeDetail} />}
           footer={
-            <ModalFooter
-              primaryAction={
-                <Button
-                  variant="Primary"
-                  size="Small"
-                  label={editingFilterId ? 'Save Filter' : 'Add Filter'}
-                  onClick={submitFilterModal}
-                />
-              }
-            />
+            detail.kind === 'filter' ? (
+              <ModalFooter
+                primaryAction={
+                  <Button
+                    variant="Primary"
+                    size="Small"
+                    label={detail.id ? 'Save Filter' : 'Add Filter'}
+                    onClick={submitFilterDetail}
+                  />
+                }
+              />
+            ) : (
+              <ModalFooter
+                primaryAction={<Button variant="Primary" size="Small" label="Done" onClick={closeDetail} />}
+              />
+            )
           }
         >
           <ModalBody>
-            <div className="wt-rowfilter-modal__body">
-              <TextInput
-                label="Name"
-                placeholder="e.g. Fail"
-                value={filterNameInput}
-                onChange={({ value }: { name: string; value: string }) => {
-                  setFilterNameInput(value);
-                  setFilterNameError('');
-                }}
-              />
-              {filterNameError && <p className="wt-config__hint wt-rowfilter-error">{filterNameError}</p>}
+            <div className="wt-detail__body">
 
-              <ColorInput
-                label="Color"
-                value={filterColorInput}
-                onChange={(color: string) => setFilterColorInput(color)}
-              />
+              {detail.kind === 'binding' && editingBinding && (
+                <>
+                  <TextInput
+                    label="Cell"
+                    placeholder="e.g. A1"
+                    value={cellRefInputs[detail.index] ?? (editingBinding.cellId ? cellIdToRef(editingBinding.cellId) : '')}
+                    onChange={({ value }: { name: string; value: string }) => {
+                      const index = detail.index;
+                      setCellRefInputs((prev) => ({ ...prev, [index]: value }));
+                      try {
+                        updateBinding(index, { cellId: refToCellId(value) });
+                      } catch { /* invalid ref — wait for more input */ }
+                    }}
+                  />
+                  <UNSTreePicker
+                    label="UNS Topic"
+                    placeholder="Select a topic…"
+                    value={editingBinding.topic}
+                    workspaces={unsWorkspaces}
+                    isLoadingWorkspaces={isLoadingWs}
+                    loadChildren={loadChildren}
+                    searchNodes={searchNodes}
+                    onOpen={loadWorkspaces}
+                    onChange={(value) => updateBinding(detail.index, { topic: value })}
+                  />
+                </>
+              )}
 
-              <div className="wt-rowfilter-icon-field">
-                <span className="wt-config__label BodySmallDefault">Icon</span>
-                <div className="wt-rowfilter-icon-grid">
-                  {ROW_FILTER_ICON_NAMES.map((name) => {
-                    const Icon = ROW_FILTER_ICONS[name];
-                    return (
-                      <button
-                        key={name}
-                        type="button"
-                        className={`wt-rowfilter-icon-btn${filterIconInput === name ? ' wt-rowfilter-icon-btn--active' : ''}`}
-                        title={name}
-                        onClick={() => setFilterIconInput(name)}
-                      >
-                        <Icon size={14} />
-                      </button>
-                    );
-                  })}
-                </div>
-              </div>
+              {detail.kind === 'series' && editingSeries && (
+                <>
+                  <TextInput
+                    label="Base cell"
+                    placeholder="e.g. A1"
+                    value={seriesRefInputs[detail.index] ?? (editingSeries.baseCellId ? cellIdToRef(editingSeries.baseCellId) : '')}
+                    onChange={({ value }: { name: string; value: string }) => {
+                      const index = detail.index;
+                      setSeriesRefInputs((prev) => ({ ...prev, [index]: value }));
+                      try {
+                        updateSeries(index, { baseCellId: refToCellId(value) });
+                      } catch { /* invalid ref — wait for more input */ }
+                    }}
+                  />
+                  <UNSTreePicker
+                    label="Array topic"
+                    placeholder="Select a topic…"
+                    value={editingSeries.topic}
+                    workspaces={unsWorkspaces}
+                    isLoadingWorkspaces={isLoadingWs}
+                    loadChildren={loadChildren}
+                    searchNodes={searchNodes}
+                    onOpen={loadWorkspaces}
+                    onChange={(value) => updateSeries(detail.index, { topic: value })}
+                  />
+                  <Field label="Direction">
+                    <SwitchButtonGroup
+                      value={editingSeries.direction}
+                      onChange={({ value }: { value: string | null }) =>
+                        updateSeries(detail.index, { direction: (value ?? 'vertical') as SeriesDirection })
+                      }
+                    >
+                      <SwitchButtonBase type="Text" value="vertical"   label="Down" />
+                      <SwitchButtonBase type="Text" value="horizontal" label="Across" />
+                    </SwitchButtonGroup>
+                  </Field>
+                  <CounterInput
+                    label="Max cells (0 = all)"
+                    value={editingSeries.limit}
+                    min={0}
+                    max={1000}
+                    step={1}
+                    onChange={({ value }: { name: string; value: number | null }) =>
+                      updateSeries(detail.index, { limit: value ?? 0 })
+                    }
+                  />
+                  <p className="wt-detail__note">{describeSeriesSpan(editingSeries, rows, columns)}</p>
+                </>
+              )}
+
+              {detail.kind === 'rule' && editingRule && (
+                <>
+                  <Checkbox
+                    label="Rule enabled"
+                    checked={editingRule.enabled}
+                    onChange={(e: React.ChangeEvent<HTMLInputElement>) =>
+                      updateRule(editingRule.id, { enabled: e.target.checked })
+                    }
+                  />
+
+                  <TextInput
+                    label="Range"
+                    placeholder="All cells"
+                    value={rangeInputs[editingRule.id] ?? rangeToString(editingRule.range)}
+                    errorText={ruleRangeErrors[editingRule.id] || undefined}
+                    validationState={ruleRangeErrors[editingRule.id] ? 'error' : undefined}
+                    onChange={({ value }: { name: string; value: string }) => {
+                      const id = editingRule.id;
+                      setRangeInputs((prev) => ({ ...prev, [id]: value }));
+                      // Commit only empty (= all cells) or a valid range — an
+                      // in-progress string must never silently become
+                      // range:null and apply the rule everywhere.
+                      if (value.trim() === '') {
+                        setRuleRangeErrors((prev) => ({ ...prev, [id]: '' }));
+                        updateRuleDebounced(id, { range: null });
+                        return;
+                      }
+                      const parsed = parseRangeString(value);
+                      if (!parsed) {
+                        setRuleRangeErrors((prev) => ({ ...prev, [id]: 'Invalid range — e.g. A1 or B2:D5' }));
+                        return;
+                      }
+                      setRuleRangeErrors((prev) => ({ ...prev, [id]: '' }));
+                      updateRuleDebounced(id, { range: parsed });
+                    }}
+                  />
+
+                  <SelectInput
+                    label="Condition"
+                    value={CONDITION_LABELS[editingRule.condition]}
+                    isOpen={openConditionRuleId === editingRule.id}
+                    onClick={() => setOpenConditionRuleId((id) => (id === editingRule.id ? null : editingRule.id))}
+                  >
+                    {openConditionRuleId === editingRule.id && (
+                      <DropdownMenu>
+                        {(Object.keys(CONDITION_LABELS) as ConditionalRuleCondition[]).map((c) => (
+                          <ActionListItem
+                            key={c}
+                            title={CONDITION_LABELS[c]}
+                            isSelected={editingRule.condition === c}
+                            onClick={() => {
+                              updateRule(editingRule.id, { condition: c });
+                              setOpenConditionRuleId(null);
+                            }}
+                          />
+                        ))}
+                      </DropdownMenu>
+                    )}
+                  </SelectInput>
+
+                  {NEEDS_VALUE1.includes(editingRule.condition) && (
+                    <div className="wt-config__row">
+                      <TextInput
+                        label={editingRule.condition === 'between' ? 'Min' : 'Value'}
+                        placeholder="0"
+                        value={editingRule.value1}
+                        onChange={({ value }: { name: string; value: string }) =>
+                          updateRuleDebounced(editingRule.id, { value1: value })
+                        }
+                      />
+                      {editingRule.condition === 'between' && (
+                        <TextInput
+                          label="Max"
+                          placeholder="100"
+                          value={editingRule.value2}
+                          onChange={({ value }: { name: string; value: string }) =>
+                            updateRuleDebounced(editingRule.id, { value2: value })
+                          }
+                        />
+                      )}
+                    </div>
+                  )}
+
+                  <Field label="Format">
+                    <div className="wt-detail__format">
+                      <Tooltip bodyText="Bold matching cells" placement="Top">
+                        <Button
+                          iconOnly
+                          aria-label="Bold matching cells"
+                          leadingIcon={<Bold size={13} />}
+                          variant={editingRule.format.bold ? 'Primary' : 'Gray'}
+                          size="Small"
+                          onClick={() => updateRule(editingRule.id, { format: { ...editingRule.format, bold: !editingRule.format.bold } })}
+                        />
+                      </Tooltip>
+                      <Tooltip bodyText="Italicise matching cells" placement="Top">
+                        <Button
+                          iconOnly
+                          aria-label="Italicise matching cells"
+                          leadingIcon={<Italic size={13} />}
+                          variant={editingRule.format.italic ? 'Primary' : 'Gray'}
+                          size="Small"
+                          onClick={() => updateRule(editingRule.id, { format: { ...editingRule.format, italic: !editingRule.format.italic } })}
+                        />
+                      </Tooltip>
+                    </div>
+                  </Field>
+
+                  <ColorInput
+                    label="Fill"
+                    value={editingRule.format.cellColor || '#ffffff'}
+                    onChange={(color: string) =>
+                      updateRule(editingRule.id, { format: { ...editingRule.format, cellColor: color } })
+                    }
+                  />
+
+                  <ColorInput
+                    label="Text"
+                    value={editingRule.format.textColor || '#1a1a1a'}
+                    onChange={(color: string) =>
+                      updateRule(editingRule.id, { format: { ...editingRule.format, textColor: color } })
+                    }
+                  />
+                </>
+              )}
+
+              {detail.kind === 'filter' && (
+                <>
+                  <TextInput
+                    label="Name"
+                    placeholder="e.g. Fail"
+                    value={filterNameInput}
+                    errorText={filterNameError || undefined}
+                    validationState={filterNameError ? 'error' : undefined}
+                    onChange={({ value }: { name: string; value: string }) => {
+                      setFilterNameInput(value);
+                      setFilterNameError('');
+                    }}
+                  />
+
+                  <ColorInput
+                    label="Color"
+                    value={filterColorInput}
+                    onChange={(color: string) => setFilterColorInput(color)}
+                  />
+
+                  <Field label="Icon">
+                    <div className="wt-icon-grid">
+                      {ROW_FILTER_ICON_NAMES.map((name) => {
+                        const Icon = ROW_FILTER_ICONS[name];
+                        return (
+                          <Tooltip key={name} bodyText={name} placement="Top">
+                            <button
+                              type="button"
+                              className={`wt-icon-grid__btn${filterIconInput === name ? ' wt-icon-grid__btn--active' : ''}`}
+                              aria-label={name}
+                              onClick={() => setFilterIconInput(name)}
+                            >
+                              <Icon size={14} />
+                            </button>
+                          </Tooltip>
+                        );
+                      })}
+                    </div>
+                  </Field>
+                </>
+              )}
+
             </div>
           </ModalBody>
         </Modal>

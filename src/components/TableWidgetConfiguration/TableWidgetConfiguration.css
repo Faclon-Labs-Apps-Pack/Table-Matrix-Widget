@@ -1,471 +1,259 @@
-/* TableWidgetConfiguration styles — use design-sdk CSS tokens only */
+/* TableWidget configuration panel.
+
+   Structure follows the IOsense config-panel pattern: Tabs at the top, an
+   Accordion of sections per tab, one BEM body wrapper inside each section.
+
+   Width budget — the panel is ~280px, and by the time content is rendered it
+   has lost 12px of body padding and 16px of accordion padding per side, so a
+   field has roughly **224px** to live in. Nothing here may exceed that:
+   every list entry is a single truncating row, and anything that needs real
+   space (topic pickers, condition builders, colour pairs) opens in the second
+   panel instead. */
 
 .wt-config {
   display: flex;
   flex-direction: column;
   height: 100%;
+  width: 100%;
+  box-sizing: border-box;
+  overflow: hidden;
+  background: var(--background-default-intense, #fff);
 }
+
+/* Only rendered when the host provides onBack. */
 .wt-config__header {
   display: flex;
   align-items: center;
-  gap: var(--spacing-03, 8px);
-  padding: var(--spacing-04, 12px) var(--spacing-05, 16px);
-  border-bottom: 1px solid var(--fds-border-default, #e0e0e0);
+  flex-shrink: 0;
+  padding: var(--spacing-03, 8px) var(--spacing-04, 12px) 0;
 }
-.wt-config__title {
-  color: var(--text-default-primary, #1a1a1a);
-}
+
 .wt-config__body {
   flex: 1;
+  min-height: 0;
+  /* The panel owns vertical scrolling; nothing may scroll it sideways. */
   overflow-y: auto;
-  padding: var(--spacing-05, 16px);
+  overflow-x: hidden;
+  padding: var(--spacing-03, 8px) var(--spacing-04, 12px) var(--spacing-06, 20px);
+}
+
+/* ── Section body — the wrapper inside every AccordionItem ── */
+.wt-section {
+  width: 100%;
+  box-sizing: border-box;
   display: flex;
   flex-direction: column;
   gap: var(--spacing-04, 12px);
+  min-width: 0;
+  padding: var(--spacing-02, 4px) 0 var(--spacing-03, 8px);
 }
-.wt-config__field {
+
+/* ── Field: label + a control that carries none of its own ──
+   overflow-x is a safety net: a segmented group is `inline-flex` with no
+   wrap, so a future label change that pushes it past 224px scrolls here
+   rather than widening the whole panel. */
+.wt-field {
   display: flex;
-  align-items: center;
-  justify-content: space-between;
-  gap: var(--spacing-03, 8px);
+  flex-direction: column;
+  gap: var(--spacing-02, 6px);
+  min-width: 0;
+  max-width: 100%;
+  overflow-x: auto;
 }
-.wt-config__label {
+
+.wt-field__label {
   color: var(--text-default-secondary, #555);
 }
-.wt-config__hint {
-  color: var(--text-default-secondary, #888);
-  font-size: 12px;
-  padding: var(--spacing-03, 8px) var(--spacing-04, 12px);
-  background: var(--background-default-subtle, #f5f5f5);
-  border-radius: var(--global-border-radius-medium, 6px);
-  border: 1px dashed var(--fds-border-subtle, #ddd);
-  text-align: center;
-}
-.wt-config__section-title {
-  font-size: 11px;
-  font-weight: 700;
-  color: var(--text-default-tertiary, #888);
-  text-transform: uppercase;
-  letter-spacing: 0.06em;
-  margin: 0;
-  padding: var(--spacing-02, 4px) 0 2px;
-}
+
+/* ── Two controls side by side ── */
 .wt-config__row {
   display: flex;
-  gap: var(--spacing-04, 12px);
+  gap: var(--spacing-03, 8px);
+  align-items: flex-start;
+  min-width: 0;
 }
+
 .wt-config__row > * {
   flex: 1;
+  min-width: 0;
 }
+
 .wt-config__row--disabled {
-  opacity: 0.45;
+  opacity: 0.5;
   pointer-events: none;
 }
-/* ── Conditional Formatting section head ── */
 
-.wt-cf-section-head {
+/* ── Rows / Columns: type-only counters ──────────────────────────────────
+   CounterInput ships +/- buttons with no prop to suppress them (checked the
+   installed 0.7.x CounterInput.d.ts), so hide its trailing slot. The class is
+   forwarded onto the component's own root element, which keeps this override
+   inside this configurator — it can never reach another widget's counters.
+   Typing and the ArrowUp/ArrowDown keys still work; min/max clamping is
+   unaffected. */
+.wt-counter--plain .fds-counter-input__trailing {
+  display: none;
+}
+
+/* The field reserves a narrower right padding for the buttons it no longer
+   shows — match the left padding so the value sits evenly in the box. */
+.wt-counter--plain .fds-counter-input__field {
+  padding-right: var(--fds-space-md, 12px);
+}
+
+/* ── Label + switch row ── */
+.wt-toggle {
   display: flex;
   align-items: center;
   justify-content: space-between;
-  padding: var(--spacing-02, 4px) 0;
+  gap: var(--spacing-03, 8px);
+  min-width: 0;
 }
-.wt-cf-add-icon-btn {
+
+.wt-toggle__label {
+  font-size: 13px;
+  color: var(--text-default-primary, #1a1a1a);
+  min-width: 0;
+}
+
+/* ── List entry ────────────────────────────────────────────────────────────
+   One row per binding / series / rule / filter. The body opens the second
+   panel; only list-context actions (reorder, delete) stay inline. */
+.wt-item {
   display: flex;
   align-items: center;
-  justify-content: center;
-  width: 24px;
-  height: 24px;
-  border-radius: 50%;
-  border: none;
-  background: var(--background-brand-default, #0073ea);
-  color: var(--text-color-on-inverted, #fff);
-  cursor: pointer;
-  flex-shrink: 0;
-  transition: background 0.12s, transform 0.1s;
-}
-.wt-cf-add-icon-btn:hover {
-  background: var(--background-brand-hover, #0063cc);
-  transform: scale(1.1);
-}
-/* ── Rule card ── */
-
-.wt-cf-rule {
-  border: 1px solid var(--fds-border-subtle, #e0e0e0);
-  border-radius: 8px;
+  gap: var(--spacing-01, 2px);
+  min-width: 0;
+  border: 1px solid var(--border-gray-subtle, #e6e6e6);
+  border-radius: var(--global-border-radius-medium, 6px);
   background: var(--background-default-intense, #fff);
-  overflow: hidden;
-  transition: opacity 0.15s;
 }
-.wt-cf-rule--disabled {
+
+.wt-item--muted {
   opacity: 0.55;
 }
-/* Head */
 
-.wt-cf-rule__head {
+.wt-item__body {
   display: flex;
   align-items: center;
-  justify-content: space-between;
-  padding: 7px 10px;
-  background: var(--background-default-subtle, #f9f9f9);
-  border-bottom: 1px solid var(--fds-border-subtle, #e0e0e0);
-}
-.wt-cf-rule__label {
-  display: flex;
-  align-items: center;
-  gap: 6px;
-  cursor: pointer;
-  user-select: none;
-}
-.wt-cf-rule__checkbox {
-  width: 14px;
-  height: 14px;
-  accent-color: var(--background-brand-default, #0073ea);
-  cursor: pointer;
-  flex-shrink: 0;
-}
-.wt-cf-rule__title {
-  font-size: 12px;
-  font-weight: 600;
-  color: var(--text-default-primary, #1a1a1a);
-}
-.wt-cf-rule__actions {
-  display: flex;
-  align-items: center;
-  gap: 1px;
-}
-.wt-cf-icon-btn {
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  width: 22px;
-  height: 22px;
-  border: none;
+  gap: var(--spacing-02, 6px);
+  flex: 1;
+  min-width: 0;
+  padding: var(--spacing-02, 6px) var(--spacing-02, 6px) var(--spacing-02, 6px) var(--spacing-03, 8px);
   background: transparent;
-  border-radius: var(--global-border-radius-medium, 4px);
-  cursor: pointer;
-  color: var(--text-default-secondary, #666);
-  padding: 0;
-}
-.wt-cf-icon-btn:hover { background: var(--background-gray-hover-light, #eee); }
-.wt-cf-icon-btn:disabled { opacity: 0.25; cursor: default; }
-.wt-cf-icon-btn--danger { color: var(--text-danger-default, #d93025); }
-.wt-cf-icon-btn--danger:hover { background: var(--background-danger-secondary, #fdecea); }
-/* Body */
-
-.wt-cf-rule__body {
-  padding: 10px;
-  display: flex;
-  flex-direction: column;
-  gap: 8px;
-}
-/* 2-column layout */
-
-.wt-cf-rule__2col {
-  display: grid;
-  grid-template-columns: 1fr 1fr;
-  gap: 8px;
-  align-items: end;
-}
-.wt-cf-rule__field {
-  display: flex;
-  flex-direction: column;
-  gap: 4px;
-  min-width: 0;
-}
-/* Small label above an input */
-
-.wt-cf-label {
-  font-size: 10px;
-  font-weight: 700;
-  color: var(--text-default-tertiary, #999);
-  text-transform: uppercase;
-  letter-spacing: 0.05em;
-  flex-shrink: 0;
-}
-/* ── Format strip ── */
-
-.wt-cf-rule__format-strip {
-  display: flex;
-  align-items: center;
-  gap: 5px;
-  flex-wrap: wrap;
-  padding-top: 2px;
-  border-top: 1px solid var(--fds-border-subtle, #f0f0f0);
-}
-/* Color pair (label + swatch button) */
-
-.wt-cf-color-pair {
-  display: flex;
-  align-items: center;
-  gap: 4px;
-  margin-left: 4px;
-}
-.wt-cf-color-pair__label {
-  font-size: 10px;
-  font-weight: 600;
-  color: var(--text-default-tertiary, #999);
-  text-transform: uppercase;
-  letter-spacing: 0.04em;
-}
-/* ── Tab bar ── */
-
-.wt-config__tabs {
-  display: flex;
-  background: var(--background-default-intense, #fff);
-  border-bottom: 2px solid var(--fds-border-subtle, #e8e8e8);
-  padding: 0 var(--spacing-05, 16px);
-  flex-shrink: 0;
-}
-.wt-config__tab {
-  padding: 9px 14px;
-  font-size: 12px;
-  font-weight: 600;
-  color: var(--text-default-secondary, #666);
   border: none;
-  background: none;
+  border-radius: var(--global-border-radius-medium, 6px);
+  font: inherit;
+  text-align: left;
   cursor: pointer;
-  border-bottom: 2px solid transparent;
-  margin-bottom: -2px;
-  transition: color 0.12s, border-color 0.12s;
-  letter-spacing: 0.01em;
 }
-.wt-config__tab:hover {
-  color: var(--text-default-primary, #1a1a1a);
-}
-.wt-config__tab--active {
-  color: var(--background-brand-default, #0073ea);
-  border-bottom-color: var(--background-brand-default, #0073ea);
-}
-/* ── Style section cards ── */
 
-.wt-style-section {
-  border: 1px solid var(--fds-border-subtle, #e8e8e8);
-  border-radius: 10px;
-  overflow: hidden;
+.wt-item__body:hover {
+  background: var(--background-gray-hover-light, #f4f4f4);
 }
-.wt-style-section__head {
-  display: flex;
-  align-items: center;
-  gap: 7px;
-  padding: 9px 12px;
-  background: linear-gradient(135deg, var(--background-default-subtle, #f8f9fb) 0%, #f2f4f7 100%);
-  border-bottom: 1px solid var(--fds-border-subtle, #e8e8e8);
-  font-size: 11px;
-  font-weight: 700;
-  color: var(--text-default-tertiary, #888);
-  text-transform: uppercase;
-  letter-spacing: 0.07em;
-  user-select: none;
+
+.wt-item__body:focus-visible {
+  outline: 2px solid var(--border-focused-default, #0073ea);
+  outline-offset: -2px;
 }
-.wt-style-section__head svg {
-  color: var(--background-brand-default, #0073ea);
+
+/* Fixed-width A1 address, so the variable part of the row starts in the
+   same place on every entry. */
+.wt-item__ref {
   flex-shrink: 0;
-}
-.wt-style-section__body {
-  padding: 12px;
-  display: flex;
-  flex-direction: column;
-  gap: 10px;
-}
-/* ── Toggle switch (wrap in card) ── */
-
-.wt-style-toggle {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  gap: 10px;
-  cursor: pointer;
-  padding: 2px 0;
-  user-select: none;
-}
-.wt-style-toggle__info {
-  display: flex;
-  flex-direction: column;
-  gap: 2px;
-  flex: 1;
-}
-.wt-style-toggle__label {
-  font-size: 13px;
-  font-weight: 500;
-  color: var(--text-default-primary, #1a1a1a);
-}
-.wt-style-toggle__hint {
-  font-size: 11px;
-  color: var(--text-default-secondary, #888);
-  line-height: 1.3;
-}
-/* ── Segmented button group ── */
-
-.wt-seg-group {
-  display: flex;
-  border: 1px solid var(--fds-border-subtle, #ddd);
-  border-radius: 6px;
-  overflow: hidden;
-}
-.wt-seg-btn {
-  flex: 1;
-  padding: 5px 8px;
+  min-width: 26px;
+  font-family: 'SFMono-Regular', 'Consolas', 'Liberation Mono', monospace;
   font-size: 11px;
   font-weight: 600;
-  border: none;
-  border-right: 1px solid var(--fds-border-subtle, #ddd);
-  background: var(--background-default-intense, #fff);
-  color: var(--text-default-secondary, #666);
-  cursor: pointer;
-  transition: background 0.1s, color 0.1s;
-  white-space: nowrap;
+  color: var(--background-brand-default, #0073ea);
 }
-.wt-seg-btn:last-child {
-  border-right: none;
-}
-.wt-seg-btn:hover:not(.wt-seg-btn--active) {
-  background: var(--background-default-subtle, #f5f5f5);
-  color: var(--text-default-primary, #1a1a1a);
-}
-.wt-seg-btn--active {
-  background: var(--background-brand-default, #0073ea);
-  color: var(--text-color-on-inverted, #fff);
-}
-/* ── Data Bindings ─────────────────────────────────────────────────────────── */
 
-.wt-binding-row {
-  display: flex;
-  align-items: flex-end;
-  gap: var(--spacing-02, 6px);
-}
-.wt-binding-row__cell {
-  width: 72px;
-  flex-shrink: 0;
-}
-.wt-binding-row__topic {
-  flex: 1;
-  min-width: 0;
-}
-.wt-binding-row__remove {
-  flex-shrink: 0;
-  margin-bottom: 2px;
-}
-/* ── Series Population ──────────────────────────────────────────────────────── */
-
-.wt-series-item {
-  display: flex;
-  flex-direction: column;
-  gap: var(--spacing-02, 6px);
-  padding: var(--spacing-03, 8px);
-  border: 1px solid var(--fds-border-subtle, #e0e0e0);
-  border-radius: 6px;
-  background: var(--background-default-subtle, #fafafa);
-}
-.wt-series-item__controls {
-  display: flex;
-  align-items: flex-end;
-  gap: var(--spacing-03, 8px);
-}
-.wt-series-item__direction {
-  flex: 1;
-  min-width: 0;
-  display: flex;
-  flex-direction: column;
-  gap: 4px;
-}
-.wt-series-item__limit {
-  width: 120px;
-  flex-shrink: 0;
-}
-.wt-series-item__seg-content {
+.wt-item__icon {
   display: inline-flex;
-  align-items: center;
-  gap: 4px;
+  flex-shrink: 0;
+  color: var(--text-default-tertiary, #999);
 }
-/* ── Row Filter ──────────────────────────────────────────────────────────── */
 
-.wt-rowfilter-error {
-  color: var(--text-danger-default, #d93025);
-  background: var(--background-danger-secondary, #fdecea);
-  border-color: var(--fds-border-subtle, #f3c6c2);
-}
-.wt-rowfilter-filter-row {
-  display: flex;
-  align-items: center;
-  gap: var(--spacing-02, 6px);
-  padding: 6px 8px;
-  border: 1px solid var(--fds-border-subtle, #e0e0e0);
-  border-radius: 6px;
-  background: var(--background-default-intense, #fff);
-}
-.wt-rowfilter-filter-row__icon {
-  display: flex;
-  align-items: center;
+.wt-item__swatch {
+  width: 10px;
+  height: 10px;
   flex-shrink: 0;
-}
-.wt-rowfilter-filter-row__swatch {
-  width: 12px;
-  height: 12px;
+  border: 1px solid var(--border-gray-subtle, #e0e0e0);
   border-radius: 3px;
-  flex-shrink: 0;
-  border: 1px solid var(--border-gray-subtle, rgba(0, 0, 0, 0.12));
 }
-.wt-rowfilter-filter-row__name {
+
+/* The one element allowed to absorb the leftover width — and to truncate. */
+.wt-item__text {
   flex: 1;
   min-width: 0;
   font-size: 12px;
-  font-weight: 500;
   color: var(--text-default-primary, #1a1a1a);
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
 }
-/* ── Add/Edit Filter modal ── */
 
-.wt-rowfilter-modal .fds-modal {
-  width: 260px;
+/* ── Trailing icon actions on a list row ── */
+.wt-row-actions {
+  display: flex;
+  align-items: center;
+  gap: var(--spacing-01, 2px);
+  flex-shrink: 0;
+  padding-right: var(--spacing-02, 4px);
 }
-.wt-rowfilter-modal__body {
+
+/* ── Second panel — every nested editor ───────────────────────────────────
+   Wider than the config panel because this is where the controls that
+   genuinely need room live. */
+.wt-detail-modal .fds-modal {
+  width: 320px;
+}
+
+.wt-detail__body {
   display: flex;
   flex-direction: column;
   gap: var(--spacing-04, 12px);
+  min-width: 0;
 }
-.wt-rowfilter-icon-field {
+
+.wt-detail__format {
   display: flex;
-  flex-direction: column;
-  gap: 6px;
+  align-items: center;
+  gap: var(--spacing-02, 6px);
 }
-.wt-rowfilter-icon-grid {
+
+/* Live readout of the cells a series will fill — feedback, not help text. */
+.wt-detail__note {
+  margin: 0;
+  font-size: 11px;
+  line-height: 1.5;
+  color: var(--text-default-tertiary, #999);
+}
+
+/* ── Icon picker (filter entries) ── */
+.wt-icon-grid {
   display: grid;
   grid-template-columns: repeat(6, 1fr);
-  gap: 4px;
+  gap: var(--spacing-01, 4px);
 }
-.wt-rowfilter-icon-btn {
+
+.wt-icon-grid__btn {
   display: flex;
   align-items: center;
   justify-content: center;
-  width: 28px;
-  height: 28px;
-  border: 1px solid var(--fds-border-subtle, #ddd);
-  border-radius: 6px;
+  height: 30px;
+  border: 1px solid var(--border-gray-subtle, #e0e0e0);
+  border-radius: var(--global-border-radius-medium, 4px);
   background: var(--background-default-intense, #fff);
-  color: var(--text-default-secondary, #666);
+  color: var(--text-default-secondary, #555);
   cursor: pointer;
-  padding: 0;
-  transition: border-color 0.1s, background 0.1s, color 0.1s;
 }
-.wt-rowfilter-icon-btn:hover {
+
+.wt-icon-grid__btn:hover {
+  background: var(--background-gray-hover-light, #f0f0f0);
+}
+
+.wt-icon-grid__btn--active {
   border-color: var(--background-brand-default, #0073ea);
-  background: var(--background-info-secondary, #f0f7ff);
-}
-.wt-rowfilter-icon-btn--active {
-  background: var(--background-brand-default, #0073ea);
-  border-color: var(--background-brand-default, #0073ea);
-  color: var(--text-color-on-inverted, #fff);
-}
-.wt-cf-range-error {
-  margin: 2px 0 0;
-  font-size: 11px;
-  color: var(--text-error-default, #d83a52);
-}
-/* Series span readout — the exact cells a series will write into. */
-.wt-series-item__span {
-  margin: var(--spacing-02, 6px) 0 0;
-  font-size: 11px;
-  color: var(--text-default-secondary, #666);
+  color: var(--background-brand-default, #0073ea);
+  background: var(--background-info-secondary, #e8f4fd);
 }

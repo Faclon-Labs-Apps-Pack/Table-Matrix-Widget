@@ -6,7 +6,6 @@ import { validateSSOToken } from './iosense-sdk/api';
 import { resolve } from './iosense-sdk/mini-engine';
 import { buildDynamicBindingPathList } from './iosense-sdk/bindings';
 import { useUNSTreePicker } from './iosense-sdk/useUNSTreePicker';
-import '@faclon-labs/design-sdk/styles.css';
 import './App.css';
 
 export default function App() {

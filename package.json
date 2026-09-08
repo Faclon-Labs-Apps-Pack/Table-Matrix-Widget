@@ -10,7 +10,7 @@
     "deploy": "claude /deploy-review"
   },
   "dependencies": {
-    "@faclon-labs/design-sdk": "^0.7.30",
+    "@faclon-labs/design-sdk": "^0.7.37",
     "@tanstack/react-virtual": "^3.13.24",
     "react": "18.2.0",
     "react-dom": "18.2.0",

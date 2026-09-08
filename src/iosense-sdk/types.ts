@@ -216,6 +216,10 @@ export interface TableWidgetUIConfig {
   columns: number;
   freezeRows: number;
   freezeColumns: number;
+  /** Nominal widget box. The widget itself always fills its host container
+   *  (100% x 100%) and no longer reads these, so there is no size form in the
+   *  configurator; the dev harness sizes its preview tile from them and they
+   *  ride through the envelope untouched. */
   widgetWidth: number;
   widgetHeight: number;
   locked: boolean;
@@ -238,6 +242,16 @@ export interface TableWidgetUIConfig {
   columnWidths: number[];
   /** Per-row heights in px, index = row. Same fallback rules as columnWidths. */
   rowHeights: number[];
+  /** Lock-mode horizontal behaviour. `false` (default) scales the columns so
+   *  they fit the widget width exactly — every column stays visible, nothing
+   *  scrolls sideways. `true` keeps each column at its configured width and
+   *  scrolls horizontally instead, which is the readable choice once the
+   *  compacted columns get too narrow. Rows always keep their configured
+   *  heights and scroll vertically either way.
+   *
+   *  Widget-owned: toggled from the table's own Settings (gear) menu, never
+   *  from the configurator — which must pass it through untouched. */
+  lockedHorizontalScroll: boolean;
   style: {
     card: TableWidgetCardStyle;
     title: TableWidgetTitleStyle;

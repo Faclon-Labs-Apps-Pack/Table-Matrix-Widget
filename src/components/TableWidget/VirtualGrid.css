@@ -512,11 +512,17 @@
   font-size: 11px;
   color: var(--text-gray-subtle, #888);
 }
-/* ── Locked fit-to-bounds ──────────────────────────────────────────────────
-   A locked table is scaled to its widget box exactly, so any scrollbar would
-   be a rounding artefact — and the scrollbar itself would shrink the viewport
-   the fit was computed against. */
-.vg-grid-wrap--fit { overflow: hidden; }
+/* ── Locked fit-to-width ───────────────────────────────────────────────────
+   Columns are scaled to the wrapper's client width, so a horizontal scrollbar
+   could only ever be a rounding artefact. Rows keep their real heights, so the
+   vertical axis still scrolls. */
+.vg-grid-wrap--fit-x {
+  overflow-x: hidden;
+  overflow-y: auto;
+}
+/* Fitted columns add up to exactly the client width; max-content would round
+   up over it and re-introduce the scrollbar the fit just removed. */
+.vg-grid-wrap--fit-x .vg-grid { width: 100%; }
 /* ── In-table search ── */
 .vg-cell--match {
   background: var(--background-warning-secondary, #fff4ce) !important;

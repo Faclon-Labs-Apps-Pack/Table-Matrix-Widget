@@ -37,6 +37,10 @@ interface VirtualGridProps {
   store: CellDataStore;
   conditionalRules: ConditionalRule[];
   locked?: boolean;
+  /** Lock-mode only. false = columns are scaled to fit the widget width so all
+   *  of them stay visible; true = columns keep their configured widths and the
+   *  table scrolls sideways. Rows always keep their heights and scroll. */
+  horizontalScroll?: boolean;
   tableBorderStyle?: TableBorderStyle;
   /** Cells carrying a UNS binding — shown with a corner indicator + tooltip and
    *  locked from manual typing (their value is populated by the service). */
@@ -222,7 +226,7 @@ function cellBorderInlineStyle(borders: CellBorders): React.CSSProperties {
   return result;
 }
 
-export function VirtualGrid({ rows, columns, freezeRows, freezeColumns, configColWidths, configRowHeights, store, conditionalRules, locked = false, tableBorderStyle = 'all', boundCells, previewCells, dataPrecision = null, isDataCell, searchMatches, activeMatch, onCellConfigure, hiddenRows, rowColors, onUserChange }: VirtualGridProps) {
+export function VirtualGrid({ rows, columns, freezeRows, freezeColumns, configColWidths, configRowHeights, store, conditionalRules, locked = false, horizontalScroll = false, tableBorderStyle = 'all', boundCells, previewCells, dataPrecision = null, isDataCell, searchMatches, activeMatch, onCellConfigure, hiddenRows, rowColors, onUserChange }: VirtualGridProps) {
   // Bound cells are service-populated — never manually editable.
   const isBound = (cellId: CellId) => boundCells?.has(cellId) ?? false;
   // Effective precision for one cell: the widget default applies only to
@@ -369,24 +373,28 @@ export function VirtualGrid({ rows, columns, freezeRows, freezeColumns, configCo
     if (m) scrollToRef.current?.(parseInt(m[1], 10), parseInt(m[2], 10));
   }, [activeMatch]);
 
-  // ── Fit-to-bounds (locked mode) ───────────────────────────────────────────
-  // A locked table is a finished read-only surface: it must fill its widget box
-  // exactly, with no strip of background showing past the last row/column and
-  // no scrollbars. Measuring the wrapper and scaling every track by one factor
-  // per axis keeps the operator's relative column proportions intact.
-  const [viewport, setViewport] = useState<{ w: number; h: number } | null>(null);
+  // ── Fit-to-width (locked mode) ────────────────────────────────────────────
+  // A locked table is a finished read-only surface: every column has to be on
+  // screen at once, with no strip of background showing past the last one.
+  // Scaling all column widths by a single factor keeps the operator's relative
+  // proportions intact. Rows are deliberately NOT scaled — squeezing 200 rows
+  // into the widget height makes them unreadable, so the table scrolls
+  // vertically instead.
+  //
+  // clientWidth (not contentRect.width) is what the columns must add up to: it
+  // already excludes the vertical scrollbar, so the fit doesn't overflow by the
+  // scrollbar's width the moment the rows are taller than the box.
+  const [viewportW, setViewportW] = useState<number | null>(null);
   useEffect(() => {
     const el = gridWrapRef.current;
     if (!el || typeof ResizeObserver === 'undefined') return;
-    const ro = new ResizeObserver(([entry]) => {
-      const box = entry.contentRect;
-      setViewport((prev) =>
-        prev && Math.abs(prev.w - box.width) < 0.5 && Math.abs(prev.h - box.height) < 0.5
-          ? prev
-          : { w: box.width, h: box.height },
-      );
-    });
+    const measure = () => {
+      const w = el.clientWidth;
+      setViewportW((prev) => (prev !== null && Math.abs(prev - w) < 0.5 ? prev : w));
+    };
+    const ro = new ResizeObserver(measure);
     ro.observe(el);
+    measure();
     return () => ro.disconnect();
   }, []);
 
@@ -416,9 +424,11 @@ export function VirtualGrid({ rows, columns, freezeRows, freezeColumns, configCo
     .map((h, i) => (hiddenRows?.has(i) ? 0 : h));
   const naturalColWidths = colWidths.slice(0, localCols);
 
-  const fitToBounds = locked && viewport !== null && viewport.w > 0 && viewport.h > 0;
-  const effectiveRowHeights = fitToBounds ? fitSizes(naturalRowHeights, viewport.h) : naturalRowHeights;
-  const layoutColWidths     = fitToBounds ? fitSizes(naturalColWidths,  viewport.w) : naturalColWidths;
+  // Locked with the Scroll bar setting off: compact the columns into the box.
+  // Locked with it on, or unlocked: natural widths, the wrapper scrolls.
+  const fitToWidth = locked && !horizontalScroll && viewportW !== null && viewportW > 0;
+  const effectiveRowHeights = naturalRowHeights;
+  const layoutColWidths     = fitToWidth ? fitSizes(naturalColWidths, viewportW) : naturalColWidths;
 
   const rowVirt = useVirtualizer({
     count: localRows,
@@ -1448,7 +1458,7 @@ export function VirtualGrid({ rows, columns, freezeRows, freezeColumns, configCo
 
       {/* ── Grid ── */}
       <div
-        className={`vg-grid-wrap${fitToBounds ? ' vg-grid-wrap--fit' : ''}`}
+        className={`vg-grid-wrap${fitToWidth ? ' vg-grid-wrap--fit-x' : ''}`}
         ref={gridWrapRef}
         tabIndex={0}
         onKeyDown={(e) => {

@@ -1,0 +1,20 @@
+/* Intentionally empty.
+ *
+ * design-sdk's compiled components each import their own stylesheet from inside
+ * the package (Chart.js line 1 is `import "./Chart.css"`, and so on for ~175
+ * components). Webpack follows those imports wherever a component is used, so
+ * every widget bundle ended up carrying its own unminified copy of the SDK's
+ * rules — which then leaked onto every other widget sharing a Lens dashboard.
+ *
+ * webpack.config.js redirects those in-package CSS imports here via
+ * NormalModuleReplacementPlugin, so the bundles ship none of the SDK's CSS.
+ *
+ * The host (Lens) is responsible for loading the full
+ * `@faclon-labs/design-sdk/styles.css` — both the component rules and the
+ * token/typography layer (`--spacing-*`, `HeadingSmallSemibold`). `base.css`
+ * alone is NOT enough: it has the tokens but none of the component rules.
+ *
+ * Locally, `src/index.tsx` (the dev-only entry) imports styles.css once and
+ * stands in for the host. That import is made from `src/`, not from inside the
+ * package, so the replacement plugin leaves it alone.
+ */

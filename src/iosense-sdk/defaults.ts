@@ -70,6 +70,7 @@ export const DEFAULT_TABLE_WIDGET_UI_CONFIG: TableWidgetUIConfig = {
   cells: {},
   columnWidths: [],
   rowHeights: [],
+  lockedHorizontalScroll: false,
   style: DEFAULT_TABLE_STYLE,
 };
 
@@ -119,6 +120,9 @@ export function withTableWidgetDefaults(
     columnWidths:     arr(c.columnWidths,     DEFAULT_TABLE_WIDGET_UI_CONFIG.columnWidths),
     rowHeights:       arr(c.rowHeights,       DEFAULT_TABLE_WIDGET_UI_CONFIG.rowHeights),
     cells:            obj(c.cells,            DEFAULT_TABLE_WIDGET_UI_CONFIG.cells),
+    // A host that round-trips the flag as null / 0 / "false" must not end up
+    // with a truthy object where the renderer expects a boolean.
+    lockedHorizontalScroll: c.lockedHorizontalScroll === true,
     // `dataPrecision: null` is a meaningful value ("leave the number alone"),
     // so it must survive the merge — only `undefined` falls back to the default.
     dataPrecision: c.dataPrecision === undefined
