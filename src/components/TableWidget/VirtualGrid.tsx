@@ -688,7 +688,10 @@ export function VirtualGrid({ rows, columns, freezeRows, freezeColumns, configCo
         setFormulaRefCells(new Set());
         requestAnimationFrame(() => {
           if (document.activeElement !== editingEl)
+            {
             editingEl.textContent = getDisplayValue(prev, store, decimalsFor(prev));
+            editingEl.scrollLeft = 0;
+          }
         });
       }
     }
@@ -1099,12 +1102,33 @@ export function VirtualGrid({ rows, columns, freezeRows, freezeColumns, configCo
           title={bound ? bound.topic : (fmt.link || undefined)}
           contentEditable={!locked && !bound}
           suppressContentEditableWarning
+          onMouseEnter={(e) => {
+            // A cell narrower than its text shows the whole value on hover,
+            // the same rule the widget title follows. Measured here rather
+            // than at render time on purpose: the grid is virtualised and
+            // re-renders on every data push, so measuring hundreds of cells
+            // per render (or holding a hovered-cell in state, which re-renders
+            // the whole grid on pointer move) would cost far more than the one
+            // measurement a hover actually needs.
+            const el = e.currentTarget;
+            const clipped = el.scrollWidth > el.clientWidth;
+            const anchor = bound ? bound.topic : (fmt.link || '');
+            const full = clipped ? getDisplayValue(cellId, store, decimalsFor(cellId)) : '';
+            // The topic / link stays on the second line so the binding
+            // affordance is not lost when a value happens to be long.
+            const text = [full, anchor].filter(Boolean).join('\n');
+            if (text) el.setAttribute('title', text);
+            else el.removeAttribute('title');
+          }}
           ref={(el: HTMLDivElement | null) => {
             if (el) {
               cellRefsMap.current.set(cellId, el);
               // Don't overwrite content while this cell is in edit mode
               if (editingCellRef.current !== cellId && document.activeElement !== el) {
                 el.textContent = getDisplayValue(cellId, store, decimalsFor(cellId));
+                // Rewind the scroll the caret left behind, so a long value is
+                // shown from its start and its ellipsis lands at the right edge.
+                el.scrollLeft = 0;
               }
             } else {
               cellRefsMap.current.delete(cellId);
@@ -1230,6 +1254,7 @@ export function VirtualGrid({ rows, columns, freezeRows, freezeColumns, configCo
               const el = cellRefsMap.current.get(cellId);
               if (el && document.activeElement !== el) {
                 el.textContent = getDisplayValue(cellId, store, decimalsFor(cellId));
+                el.scrollLeft = 0;
               }
             });
           }}

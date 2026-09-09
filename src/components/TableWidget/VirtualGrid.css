@@ -344,6 +344,17 @@
   cursor: text;
   user-select: text;
   outline: none;
+  /* A value wider than its column ends in an ellipsis rather than being cut
+     mid-character. `nowrap` + `overflow: hidden` come from .vg-cell. Hovering
+     a clipped cell reveals the whole value — see onMouseEnter in
+     VirtualGrid.tsx. */
+  text-overflow: ellipsis;
+}
+
+/* While the cell is being edited the caret has to be able to travel past the
+   right edge, so the value scrolls instead of ending in an ellipsis. */
+.vg-data-cell:focus {
+  text-overflow: clip;
 }
 .vg-data-cell:focus {
   box-shadow: inset 0 0 0 2px var(--background-brand-default, #0073ea);
