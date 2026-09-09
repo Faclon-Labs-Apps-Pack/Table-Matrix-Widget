@@ -1,13 +1,15 @@
 import { useState, useEffect, useRef } from 'react';
 import {
-  TextInput, CounterInput, Button, IconButton, Switch, Checkbox,
+  TextInput, Button, IconButton, Switch, Checkbox,
   SelectInput, DropdownMenu, ActionListItem, ColorInput, UNSTreePicker,
-  Tabs, TabItem, TabsLeadingItem, Accordion, AccordionItem, SwitchButtonGroup, SwitchButtonBase,
+  Tabs, TabItem, SwitchButtonGroup, SwitchButtonBase,
+  TopNav, TopNavLeading, TopNavContent,
+  ProductAccordionItem, ListCard, ListCardLeadingItem, ListCardTrailingItem,
 } from '@faclon-labs/design-sdk';
 import { Modal, ModalHeader, ModalBody, ModalFooter } from '@faclon-labs/design-sdk/Modal';
 import { Tooltip } from '@faclon-labs/design-sdk/Tooltip';
 import type { UNSNode, UNSWorkspace } from '@faclon-labs/design-sdk/UNSTreePicker';
-import { Bold, Italic, ChevronUp, ChevronDown, X, Plus, ArrowRight, ArrowDown, ArrowLeft, AlignLeft, AlignCenter, AlignRight, Grid, Layout, Columns, Menu, Square, Hash, Link2, TrendingUp, Type, Droplet, Filter, Tag, Database } from 'react-feather';
+import { Bold, Italic, ChevronUp, ChevronDown, Plus, Trash2, ArrowRight, ArrowDown, ArrowLeft, AlignLeft, AlignCenter, AlignRight, Grid, Columns, Menu, Square, Database } from 'react-feather';
 import {
   TableWidgetEnvelope, TableWidgetUIConfig,
   ConditionalRule, ConditionalRuleCondition,
@@ -16,6 +18,7 @@ import {
   RowFilterConfig, RowFilterType,
 } from '../../iosense-sdk/types';
 import { withTableWidgetDefaults } from '../../iosense-sdk/defaults';
+import { NumberField } from '../TableWidget/NumberField';
 // Single source of truth for the binding index — shared with the dev harness so
 // the configurator path and the on-canvas CONFIG_CHANGE path can never drift
 // (they must both tag series bindings with `type: 'series'`).
@@ -60,6 +63,10 @@ function buildEnvelope(
 
 // cellIdToRef is imported from formulaEngine — one A1 grammar for the whole widget.
 
+// The panel's own name, shown in the header. Static — the *widget's* title is a
+// separate, editable uiConfig field on the Data tab.
+const PANEL_TITLE = 'Table';
+
 // Label-and-switch row. The installed design-sdk Switch is a bare toggle (its
 // only naming prop is accessibilityLabel), so the visible label lives here
 // while the control itself stays a design-sdk component.
@@ -86,61 +93,40 @@ function ToggleRow({ label, checked, onChange }: {
 function Field({ label, children }: { label: string; children: React.ReactNode }) {
   return (
     <div className="wt-field">
-      <span className="wt-field__label BodySmallDefault">{label}</span>
+      <span className="wt-field__label BodySmallMedium">{label}</span>
       {children}
     </div>
   );
 }
 
-// Row-scoped icon actions (reorder / delete) shared by every list.
-function RowActions({ children }: { children: React.ReactNode }) {
-  return <div className="wt-row-actions">{children}</div>;
-}
-
-// Every icon-only control in this panel goes through here, so all of them
-// carry hover text — at 280px the icon is all the user sees.
-function IconAction({ icon, label, onClick, isDisabled }: {
+// Every icon-only control in this panel goes through here, so all of them are
+// chrome-less and all of them carry hover text — at 280px the icon is all the
+// user sees. Labels are Title Case; a delete label must start with the word
+// "Delete", which is what the red hover tint keys off (see the CSS).
+function IconAction({ icon, label, onClick, isDisabled, size = 'Small' }: {
   icon: React.ReactNode;
   label: string;
   onClick: (e: React.MouseEvent) => void;
   isDisabled?: boolean;
+  size?: 'Small' | 'Medium' | 'Large' | '12' | '16' | '20';
 }) {
   return (
-    <Tooltip bodyText={label} placement="Top">
+    <Tooltip bodyText={label} placement="Bottom">
       <IconButton
         icon={icon}
-        size="Small"
-        isHighlighted
+        size={size}
+        emphasis="Subtle"
         accessibilityLabel={label}
         isDisabled={isDisabled}
-        onClick={onClick}
+        onClick={(e: React.MouseEvent) => { e.stopPropagation(); onClick(e); }}
       />
     </Tooltip>
   );
 }
 
-// One entry in a list section. The body is the edit affordance (it opens the
-// second panel); trailing icons stay for actions that only make sense in list
-// context, like reordering.
-function ListRow({ onEdit, children, actions, muted }: {
-  onEdit: () => void;
-  children: React.ReactNode;
-  actions?: React.ReactNode;
-  muted?: boolean;
-}) {
-  return (
-    <div className={`wt-item${muted ? ' wt-item--muted' : ''}`}>
-      <button type="button" className="wt-item__body" onClick={onEdit}>
-        {children}
-      </button>
-      {actions && <RowActions>{actions}</RowActions>}
-    </div>
-  );
-}
-
-// Monospace A1 address chip — the fixed-width part of a binding/series row.
-function RefChip({ text }: { text: string }) {
-  return <span className="wt-item__ref">{text || '—'}</span>;
+// Italic one-liner naming the action that fills an empty section.
+function EmptyHint({ children }: { children: React.ReactNode }) {
+  return <p className="wt-config__empty-hint BodySmallRegular">{children}</p>;
 }
 
 // Trailing segment of a topic path, which is the only part that fits.
@@ -213,6 +199,12 @@ const TITLE_WEIGHT_LABELS: Record<TitleFontWeight, string> = {
   bold:    'Bold',
 };
 
+// Second-panel placement. It opens from the top of the viewport, always —
+// aligning it with the clicked row made it read as a floating popover, moved it
+// whenever the list scrolled, and capped how much of a long form could fit.
+const PANEL_TOP = 16;     // px from the top of the viewport
+const PANEL_GUTTER = 20;  // px between the config panel's right edge and the panel
+
 const NEEDS_VALUE1: ConditionalRuleCondition[] = [
   'greaterThan', 'lessThan', 'greaterThanOrEqual', 'lessThanOrEqual',
   'equalTo', 'notEqualTo', 'between', 'contains',
@@ -221,6 +213,11 @@ const NEEDS_VALUE1: ConditionalRuleCondition[] = [
 export function TableWidgetConfiguration(props: TableWidgetConfigurationProps) {
   const { config, authentication, onChange, onBack, editMode } = props;
   const [activeTab, setActiveTab] = useState<'data' | 'style' | 'filter'>('data');
+  // One section open at a time, by construction rather than by convention.
+  // Keys are tab-qualified because 'table' exists in two tabs.
+  const [openSection, setOpenSection] = useState<string | null>('data.table');
+  const toggleSection = (key: string) =>
+    setOpenSection((current) => (current === key ? null : key));
   const configRef = useRef<HTMLDivElement>(null);
 
   // UNS topic browser source. Prefer Angular-injected props when the workspace
@@ -664,8 +661,8 @@ export function TableWidgetConfiguration(props: TableWidgetConfigurationProps) {
     e?.stopPropagation();
     if (configRef.current) {
       const rect = configRef.current.getBoundingClientRect();
-      setDetailX(rect.right + 30);
-      setDetailY(rect.top);
+      setDetailX(rect.right + PANEL_GUTTER);
+      setDetailY(PANEL_TOP);
     }
     if (pane.kind === 'filter') {
       const filter = pane.id ? rowFilter.filters.find((f) => f.id === pane.id) : undefined;
@@ -736,11 +733,23 @@ export function TableWidgetConfiguration(props: TableWidgetConfigurationProps) {
 
   return (
     <div className="wt-config" ref={configRef}>
-      {onBack && (
-        <div className="wt-config__header">
-          <IconAction icon={<ArrowLeft size={16} />} label="Back" onClick={() => onBack()} />
-        </div>
-      )}
+      <div className="wt-config__header">
+        <TopNav isSticky={false}>
+          {onBack && (
+            <TopNavLeading>
+              <IconAction
+                icon={<ArrowLeft size={20} />}
+                label="Back"
+                size="Medium"
+                onClick={() => onBack()}
+              />
+            </TopNavLeading>
+          )}
+          <TopNavContent>
+            <span className="wt-config__header-title HeadingSmallSemibold">{PANEL_TITLE}</span>
+          </TopNavContent>
+        </TopNav>
+      </div>
 
       <Tabs
         value={activeTab}
@@ -749,17 +758,22 @@ export function TableWidgetConfiguration(props: TableWidgetConfigurationProps) {
         size="Medium"
         isFullWidthTabItem
       >
-        <TabItem value="data"   label="Data"   leadingItem={<TabsLeadingItem leading="Icon" size="16" icon={<Database size={16} />} />} />
-        <TabItem value="style"  label="Style"  leadingItem={<TabsLeadingItem leading="Icon" size="16" icon={<Droplet size={16} />} />} />
-        <TabItem value="filter" label="Filter" leadingItem={<TabsLeadingItem leading="Icon" size="16" icon={<Filter size={16} />} />} />
+        <TabItem value="data"   label="Data"   />
+        <TabItem value="style"  label="Style"  />
+        <TabItem value="filter" label="Filter" />
       </Tabs>
 
       {activeTab === 'data' ? (
 
         <div className="wt-config__body">
-          <Accordion mode="single" defaultExpandedKeys={['table']}>
+          <div className="wt-config__sections">
 
-            <AccordionItem value="table" title="Table" leading="Icon" leadingIcon={<Grid size={18} />}>
+            <ProductAccordionItem
+              title="Table"
+              isActive
+              isExpanded={openSection === 'data.table'}
+              onToggle={() => toggleSection('data.table')}
+            >
               <div className="wt-section">
 
                 <TextInput
@@ -773,7 +787,7 @@ export function TableWidgetConfiguration(props: TableWidgetConfigurationProps) {
                 />
 
                 <div className={`wt-config__row${locked ? ' wt-config__row--disabled' : ''}`}>
-                  <CounterInput
+                  <NumberField
                     className="wt-counter--plain"
                     label="Rows"
                     value={rows}
@@ -781,14 +795,14 @@ export function TableWidgetConfiguration(props: TableWidgetConfigurationProps) {
                     max={100}
                     step={1}
                     isDisabled={locked}
-                    onChange={({ value }: { name: string; value: number | null }) => {
+                    onChange={(value) => {
                       if (locked) return;
                       const next = value ?? 1;
                       setRows(next);
                       emit({ rows: next });
                     }}
                   />
-                  <CounterInput
+                  <NumberField
                     className="wt-counter--plain"
                     label="Columns"
                     value={columns}
@@ -796,7 +810,7 @@ export function TableWidgetConfiguration(props: TableWidgetConfigurationProps) {
                     max={50}
                     step={1}
                     isDisabled={locked}
-                    onChange={({ value }: { name: string; value: number | null }) => {
+                    onChange={(value) => {
                       if (locked) return;
                       const next = value ?? 1;
                       setColumns(next);
@@ -812,19 +826,24 @@ export function TableWidgetConfiguration(props: TableWidgetConfigurationProps) {
                 />
 
               </div>
-            </AccordionItem>
+            </ProductAccordionItem>
 
-            <AccordionItem value="values" title="Value Format" leading="Icon" leadingIcon={<Hash size={18} />}>
+            <ProductAccordionItem
+              title="Value Format"
+              isActive
+              isExpanded={openSection === 'data.values'}
+              onToggle={() => toggleSection('data.values')}
+            >
               <div className="wt-section">
 
-                <CounterInput
+                <NumberField
                   label="Decimal places"
                   value={dataPrecision ?? 0}
                   min={0}
                   max={10}
                   step={1}
                   isDisabled={dataPrecision === null}
-                  onChange={({ value }: { name: string; value: number | null }) => {
+                  onChange={(value) => {
                     const next = value ?? 0;
                     setDataPrecision(next);
                     emit({ dataPrecision: next });
@@ -860,84 +879,118 @@ export function TableWidgetConfiguration(props: TableWidgetConfigurationProps) {
                 </Field>
 
               </div>
-            </AccordionItem>
+            </ProductAccordionItem>
 
-            <AccordionItem value="bindings" title="Cell Bindings" leading="Icon" leadingIcon={<Link2 size={18} />}>
+            <ProductAccordionItem
+              title="Cell Bindings"
+              isActive
+              isExpanded={openSection === 'data.bindings'}
+              onToggle={() => toggleSection('data.bindings')}
+              headerAction={
+                <IconAction
+                  icon={<Plus size={16} />}
+                  label="Add Cell Binding"
+                  size="16"
+                  onClick={() => addBindingAndEdit()}
+                />
+              }
+            >
               <div className="wt-section">
 
                 {cellBindings.map((binding, idx) => (
-                  <ListRow
+                  <ListCard
                     key={idx}
-                    onEdit={() => openDetail({ kind: 'binding', index: idx })}
-                    actions={
-                      <IconAction
-                        icon={<X size={12} />}
-                        label="Remove binding"
-                        onClick={() => removeBinding(idx)}
+                    className="wt-tile"
+                    title={binding.cellId ? cellIdToRef(binding.cellId) : `Binding ${idx + 1}`}
+                    subtitle={topicLeaf(binding.topic)}
+                    onClick={() => openDetail({ kind: 'binding', index: idx })}
+                    trailingItems={
+                      <ListCardTrailingItem
+                        trailing="Icon"
+                        icon={
+                          <IconAction
+                            icon={<Trash2 size={13} />}
+                            label="Delete Binding"
+                            onClick={() => removeBinding(idx)}
+                          />
+                        }
                       />
                     }
-                  >
-                    <RefChip text={binding.cellId ? cellIdToRef(binding.cellId) : ''} />
-                    <span className="wt-item__text">{topicLeaf(binding.topic)}</span>
-                  </ListRow>
+                  />
                 ))}
 
-                <Button
-                  variant="Secondary"
-                  size="Small"
-                  label="Add binding"
-                  leadingIcon={<Plus size={13} />}
-                  isFullWidth
-                  onClick={addBindingAndEdit}
-                />
+                {cellBindings.length === 0 && (
+                  <EmptyHint>No cell bindings. Click + to add one.</EmptyHint>
+                )}
 
               </div>
-            </AccordionItem>
+            </ProductAccordionItem>
 
-            <AccordionItem value="series" title="Series Population" leading="Icon" leadingIcon={<TrendingUp size={18} />}>
+            <ProductAccordionItem
+              title="Series Population"
+              isActive
+              isExpanded={openSection === 'data.series'}
+              onToggle={() => toggleSection('data.series')}
+              headerAction={
+                <IconAction
+                  icon={<Plus size={16} />}
+                  label="Add Series Binding"
+                  size="16"
+                  onClick={() => addSeriesAndEdit()}
+                />
+              }
+            >
               <div className="wt-section">
 
                 {seriesBindings.map((series, idx) => (
-                  <ListRow
+                  <ListCard
                     key={series.id}
-                    onEdit={() => openDetail({ kind: 'series', index: idx })}
-                    actions={
-                      <IconAction
-                        icon={<X size={12} />}
-                        label="Remove series"
-                        onClick={() => removeSeries(idx)}
+                    className="wt-tile"
+                    title={series.baseCellId ? cellIdToRef(series.baseCellId) : `Series ${idx + 1}`}
+                    subtitle={`${series.direction === 'vertical' ? 'Vertical' : 'Horizontal'} \u2022 ${topicLeaf(series.topic)}`}
+                    leadingItem={
+                      <ListCardLeadingItem
+                        leading="Icon"
+                        icon={series.direction === 'vertical' ? <ArrowDown size={16} /> : <ArrowRight size={16} />}
                       />
                     }
-                  >
-                    <RefChip text={series.baseCellId ? cellIdToRef(series.baseCellId) : ''} />
-                    <span className="wt-item__icon">
-                      {series.direction === 'vertical' ? <ArrowDown size={12} /> : <ArrowRight size={12} />}
-                    </span>
-                    <span className="wt-item__text">{topicLeaf(series.topic)}</span>
-                  </ListRow>
+                    onClick={() => openDetail({ kind: 'series', index: idx })}
+                    trailingItems={
+                      <ListCardTrailingItem
+                        trailing="Icon"
+                        icon={
+                          <IconAction
+                            icon={<Trash2 size={13} />}
+                            label="Delete Series"
+                            onClick={() => removeSeries(idx)}
+                          />
+                        }
+                      />
+                    }
+                  />
                 ))}
 
-                <Button
-                  variant="Secondary"
-                  size="Small"
-                  label="Add series"
-                  leadingIcon={<Plus size={13} />}
-                  isFullWidth
-                  onClick={addSeriesAndEdit}
-                />
+                {seriesBindings.length === 0 && (
+                  <EmptyHint>No series. Click + to fill a run of cells from one topic.</EmptyHint>
+                )}
 
               </div>
-            </AccordionItem>
+            </ProductAccordionItem>
 
-          </Accordion>
+          </div>
         </div>
 
       ) : activeTab === 'style' ? (
 
         <div className="wt-config__body">
-          <Accordion mode="single" defaultExpandedKeys={['table']}>
+          <div className="wt-config__sections">
 
-            <AccordionItem value="table" title="Table" leading="Icon" leadingIcon={<Layout size={18} />}>
+            <ProductAccordionItem
+              title="Table"
+              isActive
+              isExpanded={openSection === 'style.table'}
+              onToggle={() => toggleSection('style.table')}
+            >
               <div className="wt-section">
 
                 <Field label="Grid lines">
@@ -1002,23 +1055,23 @@ export function TableWidgetConfiguration(props: TableWidgetConfigurationProps) {
                     </Field>
 
                     <div className="wt-config__row">
-                      <CounterInput
+                      <NumberField
                         label="Radius"
                         value={cardStyle.borderRadius}
                         min={0}
                         max={32}
                         step={1}
-                        onChange={({ value }: { name: string; value: number | null }) =>
+                        onChange={(value) =>
                           updateCardStyle({ borderRadius: value ?? 0 })
                         }
                       />
-                      <CounterInput
+                      <NumberField
                         label="Padding"
                         value={cardStyle.padding}
                         min={0}
                         max={64}
                         step={4}
-                        onChange={({ value }: { name: string; value: number | null }) =>
+                        onChange={(value) =>
                           updateCardStyle({ padding: value ?? 0 })
                         }
                       />
@@ -1027,9 +1080,14 @@ export function TableWidgetConfiguration(props: TableWidgetConfigurationProps) {
                 )}
 
               </div>
-            </AccordionItem>
+            </ProductAccordionItem>
 
-            <AccordionItem value="title" title="Title" leading="Icon" leadingIcon={<Type size={18} />}>
+            <ProductAccordionItem
+              title="Title"
+              isActive
+              isExpanded={openSection === 'style.title'}
+              onToggle={() => toggleSection('style.title')}
+            >
               <div className="wt-section">
 
                 <ColorInput
@@ -1038,13 +1096,13 @@ export function TableWidgetConfiguration(props: TableWidgetConfigurationProps) {
                   onChange={(c: string) => updateTitleStyle({ color: c })}
                 />
 
-                <CounterInput
+                <NumberField
                   label="Font size"
                   value={titleStyle.fontSize}
                   min={10}
                   max={48}
                   step={1}
-                  onChange={({ value }: { name: string; value: number | null }) =>
+                  onChange={(value) =>
                     updateTitleStyle({ fontSize: value ?? 16 })
                   }
                 />
@@ -1083,67 +1141,96 @@ export function TableWidgetConfiguration(props: TableWidgetConfigurationProps) {
                 </SelectInput>
 
               </div>
-            </AccordionItem>
+            </ProductAccordionItem>
 
-            <AccordionItem value="conditional" title="Conditional Formatting" leading="Icon" leadingIcon={<Droplet size={18} />}>
+            <ProductAccordionItem
+              title="Conditional Formatting"
+              isActive
+              isExpanded={openSection === 'style.conditional'}
+              onToggle={() => toggleSection('style.conditional')}
+              headerAction={
+                <IconAction
+                  icon={<Plus size={16} />}
+                  label="Add Formatting Rule"
+                  size="16"
+                  onClick={() => addRuleAndEdit()}
+                />
+              }
+            >
               <div className="wt-section">
 
                 {conditionalRules.map((rule, idx) => (
-                  <ListRow
+                  <ListCard
                     key={rule.id}
-                    muted={!rule.enabled}
-                    onEdit={() => openDetail({ kind: 'rule', id: rule.id })}
-                    actions={
+                    className={`wt-tile${rule.enabled ? '' : ' wt-tile--muted'}`}
+                    title={describeRule(rule)}
+                    leadingItem={
+                      <ListCardLeadingItem
+                        leading="Color"
+                        color={rule.format.cellColor || 'transparent'}
+                      />
+                    }
+                    onClick={() => openDetail({ kind: 'rule', id: rule.id })}
+                    trailingItems={
                       <>
-                        <IconAction
-                          icon={<ChevronUp size={12} />}
-                          label="Move rule up"
-                          isDisabled={idx === 0}
-                          onClick={() => moveRule(rule.id, 'up')}
+                        <ListCardTrailingItem
+                          trailing="Icon"
+                          icon={
+                            <IconAction
+                              icon={<ChevronUp size={12} />}
+                              label="Move Rule Up"
+                              isDisabled={idx === 0}
+                              onClick={() => moveRule(rule.id, 'up')}
+                            />
+                          }
                         />
-                        <IconAction
-                          icon={<ChevronDown size={12} />}
-                          label="Move rule down"
-                          isDisabled={idx === conditionalRules.length - 1}
-                          onClick={() => moveRule(rule.id, 'down')}
+                        <ListCardTrailingItem
+                          trailing="Icon"
+                          icon={
+                            <IconAction
+                              icon={<ChevronDown size={12} />}
+                              label="Move Rule Down"
+                              isDisabled={idx === conditionalRules.length - 1}
+                              onClick={() => moveRule(rule.id, 'down')}
+                            />
+                          }
                         />
-                        <IconAction
-                          icon={<X size={12} />}
-                          label="Delete rule"
-                          onClick={() => removeRule(rule.id)}
+                        <ListCardTrailingItem
+                          trailing="Icon"
+                          icon={
+                            <IconAction
+                              icon={<Trash2 size={13} />}
+                              label="Delete Rule"
+                              onClick={() => removeRule(rule.id)}
+                            />
+                          }
                         />
                       </>
                     }
-                  >
-                    <span
-                      className="wt-item__swatch"
-                      style={{ backgroundColor: rule.format.cellColor || 'transparent' }}
-                    />
-                    <span className="wt-item__text">{describeRule(rule)}</span>
-                  </ListRow>
+                  />
                 ))}
 
-                <Button
-                  variant="Secondary"
-                  size="Small"
-                  label="Add rule"
-                  leadingIcon={<Plus size={13} />}
-                  isFullWidth
-                  onClick={addRuleAndEdit}
-                />
+                {conditionalRules.length === 0 && (
+                  <EmptyHint>No formatting rules. Click + to colour cells by value.</EmptyHint>
+                )}
 
               </div>
-            </AccordionItem>
+            </ProductAccordionItem>
 
-          </Accordion>
+          </div>
         </div>
 
       ) : (
 
         <div className="wt-config__body">
-          <Accordion mode="single" defaultExpandedKeys={['rowfilter']}>
+          <div className="wt-config__sections">
 
-            <AccordionItem value="rowfilter" title="Row Filter" leading="Icon" leadingIcon={<Filter size={18} />}>
+            <ProductAccordionItem
+              title="Row Filter"
+              isActive
+              isExpanded={openSection === 'filter.rowfilter'}
+              onToggle={() => toggleSection('filter.rowfilter')}
+            >
               <div className="wt-section">
 
                 <TextInput
@@ -1186,60 +1273,86 @@ export function TableWidgetConfiguration(props: TableWidgetConfigurationProps) {
                 />
 
               </div>
-            </AccordionItem>
+            </ProductAccordionItem>
 
-            <AccordionItem value="filters" title="Filters" leading="Icon" leadingIcon={<Tag size={18} />}>
+            <ProductAccordionItem
+              title="Filters"
+              isActive
+              isExpanded={openSection === 'filter.filters'}
+              onToggle={() => toggleSection('filter.filters')}
+              headerAction={
+                <IconAction
+                  icon={<Plus size={16} />}
+                  label="Add Filter"
+                  size="16"
+                  onClick={(e: React.MouseEvent) => openDetail({ kind: 'filter', id: null }, e)}
+                />
+              }
+            >
               <div className="wt-section">
 
                 {rowFilter.filters.map((filter, idx) => {
                   const Icon = ROW_FILTER_ICONS[filter.icon];
                   return (
-                    <ListRow
+                    <ListCard
                       key={filter.id}
-                      onEdit={() => openDetail({ kind: 'filter', id: filter.id })}
-                      actions={
+                      className="wt-tile"
+                      title={filter.name || `Filter ${idx + 1}`}
+                      leadingItem={
+                        <ListCardLeadingItem
+                          leading="Icon"
+                          icon={Icon ? <Icon size={16} color={filter.color} /> : undefined}
+                        />
+                      }
+                      onClick={() => openDetail({ kind: 'filter', id: filter.id })}
+                      trailingItems={
                         <>
-                          <IconAction
-                            icon={<ChevronUp size={12} />}
-                            label="Move filter up"
-                            isDisabled={idx === 0}
-                            onClick={() => moveFilter(filter.id, 'up')}
+                          <ListCardTrailingItem
+                            trailing="Icon"
+                            icon={
+                              <IconAction
+                                icon={<ChevronUp size={12} />}
+                                label="Move Filter Up"
+                                isDisabled={idx === 0}
+                                onClick={() => moveFilter(filter.id, 'up')}
+                              />
+                            }
                           />
-                          <IconAction
-                            icon={<ChevronDown size={12} />}
-                            label="Move filter down"
-                            isDisabled={idx === rowFilter.filters.length - 1}
-                            onClick={() => moveFilter(filter.id, 'down')}
+                          <ListCardTrailingItem
+                            trailing="Icon"
+                            icon={
+                              <IconAction
+                                icon={<ChevronDown size={12} />}
+                                label="Move Filter Down"
+                                isDisabled={idx === rowFilter.filters.length - 1}
+                                onClick={() => moveFilter(filter.id, 'down')}
+                              />
+                            }
                           />
-                          <IconAction
-                            icon={<X size={12} />}
-                            label="Delete filter"
-                            onClick={() => removeFilter(filter.id)}
+                          <ListCardTrailingItem
+                            trailing="Icon"
+                            icon={
+                              <IconAction
+                                icon={<Trash2 size={13} />}
+                                label="Delete Filter"
+                                onClick={() => removeFilter(filter.id)}
+                              />
+                            }
                           />
                         </>
                       }
-                    >
-                      <span className="wt-item__icon" style={{ color: filter.color }}>
-                        {Icon ? <Icon size={13} /> : null}
-                      </span>
-                      <span className="wt-item__text">{filter.name}</span>
-                    </ListRow>
+                    />
                   );
                 })}
 
-                <Button
-                  variant="Secondary"
-                  size="Small"
-                  label="Add filter"
-                  leadingIcon={<Plus size={13} />}
-                  isFullWidth
-                  onClick={(e: React.MouseEvent) => openDetail({ kind: 'filter', id: null }, e)}
-                />
+                {rowFilter.filters.length === 0 && (
+                  <EmptyHint>No filters. Click + to add one.</EmptyHint>
+                )}
 
               </div>
-            </AccordionItem>
+            </ProductAccordionItem>
 
-          </Accordion>
+          </div>
         </div>
       )}
 
@@ -1338,13 +1451,13 @@ export function TableWidgetConfiguration(props: TableWidgetConfigurationProps) {
                       <SwitchButtonBase type="Text" value="horizontal" label="Across" />
                     </SwitchButtonGroup>
                   </Field>
-                  <CounterInput
+                  <NumberField
                     label="Max cells (0 = all)"
                     value={editingSeries.limit}
                     min={0}
                     max={1000}
                     step={1}
-                    onChange={({ value }: { name: string; value: number | null }) =>
+                    onChange={(value) =>
                       updateSeries(detail.index, { limit: value ?? 0 })
                     }
                   />

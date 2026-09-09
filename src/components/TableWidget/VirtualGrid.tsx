@@ -226,6 +226,38 @@ function cellBorderInlineStyle(borders: CellBorders): React.CSSProperties {
   return result;
 }
 
+// Wheel-on-hover for the toolbar's two native number inputs: no click needed,
+// and the gesture never also scrolls the toolbar underneath.
+//
+// React's onWheel is delegated at the root as a passive listener, where
+// preventDefault is a no-op — the value would change AND the page would scroll.
+// A non-passive listener on the element itself is the only way to stop that.
+function attachWheelStep(input: HTMLInputElement | null): void {
+  if (!input) return;
+
+  input.addEventListener('wheel', (event: WheelEvent) => {
+    if (event.deltaY === 0) return;
+    event.preventDefault();
+
+    const min = input.min === '' ? -Infinity : Number(input.min);
+    const max = input.max === '' ? Infinity : Number(input.max);
+    const current = input.value === '' ? min : Number(input.value);
+    if (!Number.isFinite(current)) return;
+
+    // Scrolling up raises the value, matching the arrow keys.
+    const next = Math.min(max, Math.max(min, current + (event.deltaY < 0 ? 1 : -1)));
+    if (next === current) return;
+
+    // Assign through the prototype setter so React's onChange still fires —
+    // setting .value directly is invisible to React's synthetic event system.
+    const setValue = Object.getOwnPropertyDescriptor(
+      window.HTMLInputElement.prototype, 'value',
+    )?.set;
+    setValue?.call(input, String(next));
+    input.dispatchEvent(new Event('input', { bubbles: true }));
+  }, { passive: false });
+}
+
 export function VirtualGrid({ rows, columns, freezeRows, freezeColumns, configColWidths, configRowHeights, store, conditionalRules, locked = false, horizontalScroll = false, tableBorderStyle = 'all', boundCells, previewCells, dataPrecision = null, isDataCell, searchMatches, activeMatch, onCellConfigure, hiddenRows, rowColors, onUserChange }: VirtualGridProps) {
   // Bound cells are service-populated — never manually editable.
   const isBound = (cellId: CellId) => boundCells?.has(cellId) ?? false;
@@ -1235,13 +1267,17 @@ export function VirtualGrid({ rows, columns, freezeRows, freezeColumns, configCo
         <span className="vg-divider" />
 
         <input
+          ref={attachWheelStep}
           className="vg-font-size-input"
           type="number"
           min={8}
           max={72}
           value={currentFontSize}
+          onKeyDown={(e: React.KeyboardEvent<HTMLInputElement>) => {
+            if (e.key === '-') e.preventDefault();
+          }}
           onChange={(e: React.ChangeEvent<HTMLInputElement>) => {
-            const size = parseInt(e.target.value, 10);
+            const size = Math.abs(parseInt(e.target.value, 10));
             if (!isNaN(size) && size >= 8 && size <= 72) applyFmt({ fontSize: size });
           }}
         />
@@ -1271,17 +1307,21 @@ export function VirtualGrid({ rows, columns, freezeRows, freezeColumns, configCo
         <span className="vg-numfmt-decimals" title="Decimal places (blank = widget default)">
           <Hash size={11} />
           <input
+            ref={attachWheelStep}
             className="vg-font-size-input vg-font-size-input--narrow"
             type="number"
             min={0}
             max={10}
             placeholder={dataPrecision === null ? '—' : String(dataPrecision)}
             value={currentDecimals === null ? '' : currentDecimals}
+            onKeyDown={(e: React.KeyboardEvent<HTMLInputElement>) => {
+              if (e.key === '-') e.preventDefault();
+            }}
             onChange={(e: React.ChangeEvent<HTMLInputElement>) => {
               const raw = e.target.value;
               if (raw === '') { applyFmt({ decimals: null }); return; }
-              const d = parseInt(raw, 10);
-              if (!isNaN(d) && d >= 0 && d <= 10) applyFmt({ decimals: d });
+              const d = Math.abs(parseInt(raw, 10));
+              if (!isNaN(d) && d <= 10) applyFmt({ decimals: d });
             }}
           />
         </span>

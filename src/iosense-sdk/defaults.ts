@@ -17,7 +17,11 @@ import {
 } from './types';
 
 export const DEFAULT_CARD_STYLE: TableWidgetCardStyle = {
-  wrapInCard: false,
+  // On by default: a bare table sitting flush against the dashboard tile reads
+  // as unfinished, and the card is what gives it an edge. Both the widget and
+  // the configurator resolve this through withTableWidgetDefaults, so the two
+  // can never disagree about the starting state.
+  wrapInCard: true,
   bg: '',
   borderColor: '#e0e0e0',
   borderWidth: 1,

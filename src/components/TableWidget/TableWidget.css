@@ -28,6 +28,13 @@
   font-weight: 600;
   color: var(--text-default-primary, #1a1a1a);
   line-height: 1.4;
+  /* One line, clipped with an ellipsis rather than wrapping or pushing the
+     action group off the bar. When it does clip, the widget puts the full
+     title on the element's `title` attribute so hovering reveals it — see
+     useIsTruncated in TableWidget.tsx. */
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
 }
 
 .tw-topbar__actions {

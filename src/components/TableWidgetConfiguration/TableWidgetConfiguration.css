@@ -20,12 +20,32 @@
   background: var(--background-default-intense, #fff);
 }
 
-/* Only rendered when the host provides onBack. */
-.wt-config__header {
-  display: flex;
-  align-items: center;
+/* The SDK wraps horizontal Tabs in a .fds-tabs-scroller, so both have to be
+   pinned or a tall tab body squeezes the tab bar. Scoped to direct children so
+   any nested Tabs inside tab content are left alone. */
+.wt-config > .fds-tabs-scroller,
+.wt-config > .fds-tabs {
   flex-shrink: 0;
-  padding: var(--spacing-03, 8px) var(--spacing-04, 12px) 0;
+}
+
+/* ── Header ────────────────────────────────────────────────────────────────
+   TopNav owns the height, padding and internal gap. This wrapper exists only
+   to carry the divider and to repaint the bar — TopNav exposes props for
+   neither. The back arrow renders only when the host passes onBack; the title
+   is always there. */
+.wt-config__header {
+  flex-shrink: 0;
+  border-bottom: 1px solid var(--border-gray-subtle, #f0f0f0);
+}
+
+.wt-config__header > .fds-topnav {
+  background: var(--background-default-intense, #ffffff);
+}
+
+/* --text-default-primary is the token that exists; --text-gray-primary
+   resolves to nothing here and falls through to inherit. */
+.wt-config__header-title {
+  color: var(--text-default-primary, #1a1a1a);
 }
 
 .wt-config__body {
@@ -34,7 +54,6 @@
   /* The panel owns vertical scrolling; nothing may scroll it sideways. */
   overflow-y: auto;
   overflow-x: hidden;
-  padding: var(--spacing-03, 8px) var(--spacing-04, 12px) var(--spacing-06, 20px);
 }
 
 /* ── Section body — the wrapper inside every AccordionItem ── */
@@ -61,8 +80,19 @@
   overflow-x: auto;
 }
 
+/* Type comes from the BodySmallMedium class on the element — this rule owns
+   the colour only. (The theme's LabelMediumDefault does not exist in the
+   installed 0.7.x; BodySmallMedium is the nearest class that does.) */
 .wt-field__label {
   color: var(--text-default-secondary, #555);
+}
+
+/* ── Empty states ──────────────────────────────────────────────────────────
+   Italic is the signature: a hint is never mistaken for content. */
+.wt-config__empty-hint {
+  margin: 0;
+  color: var(--text-default-tertiary, #999);
+  font-style: italic;
 }
 
 /* ── Two controls side by side ── */
@@ -115,97 +145,133 @@
   min-width: 0;
 }
 
-/* ── List entry ────────────────────────────────────────────────────────────
-   One row per binding / series / rule / filter. The body opens the second
-   panel; only list-context actions (reorder, delete) stay inline. */
-.wt-item {
-  display: flex;
-  align-items: center;
-  gap: var(--spacing-01, 2px);
-  min-width: 0;
-  border: 1px solid var(--border-gray-subtle, #e6e6e6);
-  border-radius: var(--global-border-radius-medium, 6px);
-  background: var(--background-default-intense, #fff);
+/* ── Destructive affordance — one rule for the whole panel ─────────────────
+   Keyed off the aria-label prefix rather than a per-instance class, which is
+   why every delete label must start with the word "Delete". Red on hover and
+   focus only: never red at rest. */
+.wt-config .fds-icon-btn[aria-label^="Delete"]:hover,
+.wt-config .fds-icon-btn[aria-label^="Delete"]:focus-visible {
+  color: var(--text-error-default);
+  background: var(--background-error-secondary);
 }
 
-.wt-item--muted {
-  opacity: 0.55;
+.wt-config .fds-icon-btn[aria-label^="Delete"]:hover .fds-icon-btn__icon,
+.wt-config .fds-icon-btn[aria-label^="Delete"]:focus-visible .fds-icon-btn__icon {
+  color: var(--text-error-default);
 }
 
-.wt-item__body {
-  display: flex;
-  align-items: center;
-  gap: var(--spacing-02, 6px);
-  flex: 1;
-  min-width: 0;
-  padding: var(--spacing-02, 6px) var(--spacing-02, 6px) var(--spacing-02, 6px) var(--spacing-03, 8px);
-  background: transparent;
-  border: none;
-  border-radius: var(--global-border-radius-medium, 6px);
-  font: inherit;
-  text-align: left;
+/* ── List tiles ────────────────────────────────────────────────────
+   One SDK ListCard per binding / series / rule / filter. The card owns its own
+   padding and type — the rules here only add what the SDK has no prop for:
+   the click affordance, the hover reveal, and truncation at 224px. */
+.wt-tile {
   cursor: pointer;
 }
 
-.wt-item__body:hover {
-  background: var(--background-gray-hover-light, #f4f4f4);
+.wt-tile--muted {
+  opacity: 0.55;
 }
 
-.wt-item__body:focus-visible {
-  outline: 2px solid var(--border-focused-default, #0073ea);
-  outline-offset: -2px;
+/* Trailing actions stay out of the way until the row is hovered or something
+   inside it takes keyboard focus, so a list reads as content rather than as a
+   wall of icons. */
+.wt-tile .fds-list-card__trailing {
+  opacity: 0;
+  transition: opacity 0.15s ease;
 }
 
-/* Fixed-width A1 address, so the variable part of the row starts in the
-   same place on every entry. */
-.wt-item__ref {
-  flex-shrink: 0;
-  min-width: 26px;
-  font-family: 'SFMono-Regular', 'Consolas', 'Liberation Mono', monospace;
-  font-size: 11px;
-  font-weight: 600;
-  color: var(--background-brand-default, #0073ea);
+.wt-tile:hover .fds-list-card__trailing,
+.wt-tile:focus-within .fds-list-card__trailing {
+  opacity: 1;
 }
 
-.wt-item__icon {
-  display: inline-flex;
-  flex-shrink: 0;
-  color: var(--text-default-tertiary, #999);
-}
-
-.wt-item__swatch {
-  width: 10px;
-  height: 10px;
-  flex-shrink: 0;
-  border: 1px solid var(--border-gray-subtle, #e0e0e0);
-  border-radius: 3px;
-}
-
-/* The one element allowed to absorb the leftover width — and to truncate. */
-.wt-item__text {
-  flex: 1;
+/* Neither line may widen the panel: both truncate to one line. min-width on
+   every flex ancestor is what lets the ellipsis actually happen. */
+.wt-tile .fds-list-card__content,
+.wt-tile .fds-list-card__text {
   min-width: 0;
-  font-size: 12px;
-  color: var(--text-default-primary, #1a1a1a);
+}
+
+.wt-tile .fds-list-card__title,
+.wt-tile .fds-list-card__subtitle {
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
 }
 
-/* ── Trailing icon actions on a list row ── */
-.wt-row-actions {
+/* ── Sections ─────────────────────────────────────────────────────
+   The accordion group. Sections are standalone ProductAccordionItems driven by
+   one openSection value, so opening one closes the other by construction. */
+.wt-config__sections {
   display: flex;
-  align-items: center;
-  gap: var(--spacing-01, 2px);
-  flex-shrink: 0;
-  padding-right: var(--spacing-02, 4px);
+  flex-direction: column;
+}
+
+/* The chevron is aria-hidden and a *sibling* of the header's toggle button, so
+   clicks on it never reach onToggle — a section could be opened from the header
+   but not closed from the arrow. Let the click fall through to the toggle. */
+.wt-config .fds-pa-item__chevron {
+  pointer-events: none;
 }
 
 /* ── Second panel — every nested editor ───────────────────────────────────
    Wider than the config panel because this is where the controls that
-   genuinely need room live. */
+   genuinely need room live. Header and footer are flex-none siblings of the
+   body, which pins both without either needing position: sticky. */
 .wt-detail-modal .fds-modal {
   width: 320px;
+  max-height: calc(100vh - 32px);   /* the 16px top offset, mirrored at the bottom */
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+}
+
+.wt-detail-modal .fds-modal__body {
+  flex: 1 1 auto;
+  min-height: 0;
+  overflow-y: auto;
+}
+
+.wt-detail-modal .fds-modal-header__wrapper,
+.wt-detail-modal .fds-modal-footer__actions {
+  flex: 0 0 auto;
+}
+
+/* SDK corrections: the header ships no bottom padding, and its root adds a gap
+   this panel doesn't want. */
+.wt-detail-modal .fds-modal-header__wrapper {
+  padding-bottom: var(--spacing-05, 16px);
+}
+
+.wt-detail-modal .fds-modal-header__root {
+  gap: 0;
+}
+
+.wt-detail-modal .fds-modal-footer__actions {
+  padding: var(--spacing-05, 16px);
+}
+
+.wt-detail-modal .fds-modal-footer__stack:empty {
+  display: none;
+}
+
+/* Single-action footer spans the full width. isFullWidth on the Button is not
+   enough — the footer's action row and stack are content-width, so the whole
+   chain has to be stretched. */
+.wt-detail-modal .fds-modal-footer__actions,
+.wt-detail-modal .fds-modal-footer__stack,
+.wt-detail-modal .fds-modal-footer__slot {
+  width: 100%;
+}
+
+.wt-detail-modal .fds-modal-footer__stack {
+  flex: 1 1 auto;
+}
+
+.wt-detail-modal .fds-modal-footer__slot > *,
+.wt-detail-modal .fds-modal-footer__slot button,
+.wt-detail-modal .fds-modal-footer__slot .fds-btn {
+  width: 100%;
 }
 
 .wt-detail__body {

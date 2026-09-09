@@ -1,5 +1,5 @@
 import { useRef, useEffect, useMemo, useState } from 'react';
-import { Button, TextInput, CounterInput, Chip, Checkbox, Popover, PopoverBody, UNSTreePicker, SearchInput } from '@faclon-labs/design-sdk';
+import { Button, TextInput, Chip, Checkbox, Popover, PopoverBody, UNSTreePicker, SearchInput } from '@faclon-labs/design-sdk';
 import { Modal, ModalHeader, ModalBody, ModalFooter } from '@faclon-labs/design-sdk/Modal';
 import { ChartActions } from '@faclon-labs/design-sdk/Chart';
 import type { UNSNode, UNSWorkspace } from '@faclon-labs/design-sdk/UNSTreePicker';
@@ -10,6 +10,7 @@ import { useUNSTreePicker } from '../../iosense-sdk/useUNSTreePicker';
 import { useZoneIgnorePortals } from '../../iosense-sdk/zoneIgnorePortals';
 import { buildDynamicBindingPathList } from '../../iosense-sdk/bindings';
 import { CellDataStore, CellId, isDefaultFormat } from './CellDataStore';
+import { NumberField } from './NumberField';
 import { VirtualGrid, GridGeometry } from './VirtualGrid';
 import { computeBoundCells, seriesPreviewCells, remapForGridMutation, GridMutation, RemappableConfig } from './bindingMap';
 import { getDisplayValue, cellIdToRef } from './formulaEngine';
@@ -119,6 +120,35 @@ interface TableWidgetProps {
   searchUnsNodes?: (wsId: string, query: string, limit?: number) => Promise<UNSNode[]>;
   /** Bearer token used only when the host injects no UNS source (dev harness). */
   authentication?: string;
+}
+
+// Reports whether an element's text is actually being clipped, so the full
+// text can be offered on hover *only* when it is — a short title that fits
+// should not sprout a redundant tooltip.
+//
+// Element identity is held in state rather than a ref so the effect re-runs
+// when the node mounts or unmounts (the title is conditional on having one).
+// ResizeObserver covers the dashboard resizing the tile; `deps` covers the
+// changes it cannot see, where the box stays put but the text stops fitting —
+// a new title, or a font size/weight change from the configurator.
+function useIsTruncated(deps: unknown[]) {
+  const [el, setEl] = useState<HTMLElement | null>(null);
+  const [isTruncated, setIsTruncated] = useState(false);
+
+  useEffect(() => {
+    if (!el) {
+      setIsTruncated(false);
+      return;
+    }
+    const measure = () => setIsTruncated(el.scrollWidth > el.clientWidth);
+    measure();
+    const observer = new ResizeObserver(measure);
+    observer.observe(el);
+    return () => observer.disconnect();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [el, ...deps]);
+
+  return { setEl, isTruncated };
 }
 
 export function TableWidget(props: TableWidgetProps) {
@@ -733,6 +763,10 @@ export function TableWidget(props: TableWidgetProps) {
   const showExportButton = cfg.style.showExportButton;
   const showSearch = cfg.style.showSearch;
   const showHeader = cfg.title.trim() !== '';
+  // The title truncates to one line; hovering a truncated one reveals it whole.
+  const { setEl: setTitleEl, isTruncated: isTitleTruncated } = useIsTruncated([
+    cfg.title, titleCfg.fontSize, titleCfg.fontWeight,
+  ]);
 
   const cardInlineStyle: React.CSSProperties = {
     // The host container is the single source of truth for the widget box: the
@@ -767,7 +801,14 @@ export function TableWidget(props: TableWidgetProps) {
       {/* The action group is always present, so the topbar always renders. */}
       <div className="tw-topbar">
           {showHeader && (
-            <h3 className="tw-title" style={titleInlineStyle}>{cfg.title}</h3>
+            <h3
+              ref={setTitleEl}
+              className="tw-title"
+              style={titleInlineStyle}
+              title={isTitleTruncated ? cfg.title : undefined}
+            >
+              {cfg.title}
+            </h3>
           )}
           <div className="tw-topbar__actions">
             {showSearch && (
@@ -1042,13 +1083,13 @@ export function TableWidget(props: TableWidgetProps) {
                     </div>
                   </div>
 
-                  <CounterInput
+                  <NumberField
                     label="Max cells (0 = all)"
                     value={activeSeries?.limit ?? 0}
                     min={0}
                     max={1000}
                     step={1}
-                    onChange={({ value }: { name: string; value: number | null }) =>
+                    onChange={(value) =>
                       upsertSeries(configCellId, { limit: value ?? 0 })
                     }
                   />
