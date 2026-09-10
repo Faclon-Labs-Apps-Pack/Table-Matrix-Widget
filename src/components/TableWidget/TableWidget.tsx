@@ -1,15 +1,16 @@
 import { useRef, useEffect, useMemo, useState } from 'react';
-import { Button, TextInput, Chip, Checkbox, Popover, PopoverBody, UNSTreePicker, SearchInput } from '@faclon-labs/design-sdk';
+import { Button, TextInput, Chip, Checkbox, Popover, PopoverHeader, PopoverBody, UNSTreePicker, SearchInput, Tooltip } from '@faclon-labs/design-sdk';
 import { Modal, ModalHeader, ModalBody, ModalFooter } from '@faclon-labs/design-sdk/Modal';
 import { ChartActions } from '@faclon-labs/design-sdk/Chart';
 import type { UNSNode, UNSWorkspace } from '@faclon-labs/design-sdk/UNSTreePicker';
 import { Download, ArrowDown, ArrowRight, Trash2, Filter, ChevronUp, ChevronDown } from 'react-feather';
-import { DataEntry, WidgetEvent, SeriesDirection, PersistedCell, TableWidgetUIConfig } from '../../iosense-sdk/types';
+import { DataEntry, WidgetEvent, SeriesDirection, PersistedCell, TableWidgetUIConfig, DataFormat } from '../../iosense-sdk/types';
 import { PartialTableWidgetUIConfig, withTableWidgetDefaults } from '../../iosense-sdk/defaults';
 import { useUNSTreePicker } from '../../iosense-sdk/useUNSTreePicker';
 import { useZoneIgnorePortals } from '../../iosense-sdk/zoneIgnorePortals';
 import { buildDynamicBindingPathList } from '../../iosense-sdk/bindings';
 import { CellDataStore, CellId, isDefaultFormat } from './CellDataStore';
+import { buildXlsx, XlsxValue } from './xlsx';
 import { NumberField } from './NumberField';
 import { VirtualGrid, GridGeometry } from './VirtualGrid';
 import { computeBoundCells, seriesPreviewCells, remapForGridMutation, GridMutation, RemappableConfig } from './bindingMap';
@@ -19,6 +20,30 @@ import './TableWidget.css';
 
 // A cell holds one binding kind at a time in the Cell Config popover.
 type CellConfigKind = 'single' | 'series';
+type DownloadFormat = 'csv' | 'xlsx';
+
+// Chrome the user operates rather than looks at. Two quick clicks on a toolbar
+// button, or a double-click to select a word in the search box, are ordinary
+// use of the control — not a request to open the configuration panel.
+const CONTROL_SELECTOR =
+  'button, input, select, textarea, a, [role="button"], .vg-toolbar, .vg-formula-bar, .tw-search, .tw-actions, .tw-filter-bar';
+
+function isControlTarget(target: EventTarget | null): boolean {
+  return target instanceof Element && target.closest(CONTROL_SELECTOR) !== null;
+}
+
+// A cell that reads as a plain number goes into the sheet as one; anything else
+// (text, or a number carrying a unit) stays a string.
+function toXlsxValue(text: string): XlsxValue {
+  const trimmed = text.trim();
+  if (trimmed === '') return '';
+  const n = Number(trimmed.replace(/,/g, ''));
+  return Number.isFinite(n) && /^[-+]?[\d,]*\.?\d+$/.test(trimmed) ? n : text;
+}
+
+// A cell no binding fills: no rounding, no suffix.
+const NO_DATA_FORMAT: DataFormat = { precision: null, unit: '' };
+
 const SERIES_PREVIEW_FALLBACK = 5; // cells previewed when limit is 0 (fill-all)
 
 // Render a resolved scalar to the cell's string value.
@@ -215,16 +240,63 @@ export function TableWidget(props: TableWidgetProps) {
   // setValues call is what keeps INP well under 50 ms even for large series.
   //
   // dataFilledRef tracks EVERY cell whose value came from the data prop (single
-  // and series alike): serializeCells uses it to keep live readings out of the
-  // persisted uiConfig.cells, and the stale-blank loop below uses it to clear
-  // cells a removed/re-laid-out binding no longer covers.
-  const dataFilledRef = useRef<Set<CellId>>(new Set());
+  // and series alike), mapped to the DataEntry key that filled it — "R{r}C{c}"
+  // for a single binding, "series:R{r}C{c}" for a series. serializeCells uses
+  // it to keep live readings out of the persisted uiConfig.cells, the
+  // stale-blank loop below uses it to clear cells a re-laid-out binding no
+  // longer covers, and the owning key lets a binding deleted in the
+  // configurator clear its cells before the host has re-resolved.
+  const dataFilledRef = useRef<Map<CellId, string>>(new Map());
+
+  // Cells carrying a binding — drives the corner indicator + topic tooltip so
+  // operators can tell live-bound cells apart from static ones at runtime, and
+  // locks them from manual typing (service-populated).
+  const boundCells = useMemo(
+    () => computeBoundCells(cfg.cellBindings, cfg.seriesBindings),
+    [cfg.cellBindings, cfg.seriesBindings],
+  );
+  const boundCellsRef = useRef(boundCells);
+  boundCellsRef.current = boundCells;
 
   // Read at render time (not captured), so it reflects the latest resolve even
   // when only the grid re-rendered. boundCells covers a binding whose value has
   // not landed yet; dataFilledRef covers every cell a series actually filled.
+  //
+  // boundCells/boundCellsRef MUST stay above this: isDataCell runs during
+  // render (the search memo calls it through precisionFor), and declaring the
+  // ref further down left it in the temporal dead zone — the first keystroke in
+  // the search box threw "cannot read properties of undefined" and took the
+  // whole widget down with it.
   const isDataCell = (cellId: CellId) =>
     dataFilledRef.current.has(cellId) || boundCellsRef.current.has(cellId);
+
+  // Unit and precision come from the binding that fills the cell, and apply
+  // only when that binding sets them — an unset field leaves the value exactly
+  // as it resolved, with no suffix. Indexed once per config change: this is
+  // read for every rendered cell, on every render.
+  const bindingFormats = useMemo(() => {
+    const byCell = new Map<string, DataFormat>();
+    const bySeriesKey = new Map<string, DataFormat>();
+    for (const b of cfg.cellBindings) {
+      byCell.set(b.cellId, { precision: b.precision ?? null, unit: b.unit ?? '' });
+    }
+    for (const s of cfg.seriesBindings) {
+      const format: DataFormat = { precision: s.precision ?? null, unit: s.unit ?? '' };
+      bySeriesKey.set(`series:${s.baseCellId}`, format);
+      // The base cell before any data has landed — dataFilledRef is still empty
+      // then, so the series would otherwise format nothing.
+      byCell.set(s.baseCellId, format);
+    }
+    return { byCell, bySeriesKey };
+  }, [cfg.cellBindings, cfg.seriesBindings]);
+
+  const dataFormatFor = (cellId: CellId): DataFormat => {
+    const owner = dataFilledRef.current.get(cellId);
+    const format = owner?.startsWith('series:')
+      ? bindingFormats.bySeriesKey.get(owner)
+      : bindingFormats.byCell.get(cellId);
+    return format ?? NO_DATA_FORMAT;
+  };
 
   useEffect(() => {
     console.log('[TableWidget] data received', data);
@@ -232,13 +304,13 @@ export function TableWidget(props: TableWidgetProps) {
     if (!store) return;
 
     const batch: Array<{ cellId: CellId; value: string }> = [];
-    const filled = new Set<CellId>();
+    const filled = new Map<CellId, string>();
 
     for (const entry of toEntries(data)) {
       const key = String(entry?.key ?? '');
       if (/^R\d+C\d+$/.test(key)) {
         // Single-cell binding — DataEntry.key is already the target cellId.
-        filled.add(key as CellId);
+        filled.set(key as CellId, key);
         batch.push({ cellId: key as CellId, value: scalarToString(entry.value) });
         continue;
       }
@@ -270,7 +342,7 @@ export function TableWidget(props: TableWidgetProps) {
         // the moment the user grows the table.
         if (r >= cfg.rows || c >= cfg.columns) break;
         const cellId = `R${r}C${c}` as CellId;
-        filled.add(cellId);
+        filled.set(cellId, key);
         batch.push({ cellId, value: scalarToString(points[i]) });
         written++;
       }
@@ -291,7 +363,7 @@ export function TableWidget(props: TableWidgetProps) {
     // the cap (or a shorter array) leaves a tail behind, and a cleared binding
     // leaves its last live reading on screen — which the persistence pass would
     // then freeze into uiConfig.cells as if it were manual content.
-    for (const cellId of dataFilledRef.current) {
+    for (const cellId of dataFilledRef.current.keys()) {
       if (!filled.has(cellId)) batch.push({ cellId, value: '' });
     }
     dataFilledRef.current = filled;
@@ -300,6 +372,34 @@ export function TableWidget(props: TableWidgetProps) {
     // hydrateTick: re-inject after an external cells hydration cleared the store.
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [data, cfg.seriesBindings, cfg.rows, cfg.columns, hydrateTick]);
+
+  // A binding deleted in the configurator (or left with its topic cleared) stops
+  // appearing in `data`, but the reading it last wrote is still sitting in the
+  // cell. The stale-blank loop above only runs once the host has re-resolved —
+  // a round-trip away at best, and never at all for a host that re-resolves on
+  // a time change alone — so the cell would keep showing a value with nothing
+  // behind it. Clear the cells a binding no longer owns the moment the config
+  // says it is gone; a still-live binding re-fills its own cells from `data`.
+  useEffect(() => {
+    const store = storeRef.current;
+    if (!store) return;
+
+    const liveKeys = new Set<string>([
+      ...cfg.cellBindings.filter((b) => (b.topic ?? '').trim()).map((b) => b.cellId),
+      ...cfg.seriesBindings.filter((s) => (s.topic ?? '').trim()).map((s) => `series:${s.baseCellId}`),
+    ]);
+
+    const batch: Array<{ cellId: CellId; value: string }> = [];
+    const remaining = new Map<CellId, string>();
+    for (const [cellId, owner] of dataFilledRef.current) {
+      if (liveKeys.has(owner)) remaining.set(cellId, owner);
+      else batch.push({ cellId, value: '' });
+    }
+    if (batch.length === 0) return;
+
+    dataFilledRef.current = remaining;
+    store.setValues(batch);
+  }, [cfg.cellBindings, cfg.seriesBindings]);
 
   // ── Row Filter ──────────────────────────────────────────────────────────────
   // Filter instances read already-resolved cell text straight out of the store,
@@ -352,10 +452,14 @@ export function TableWidget(props: TableWidgetProps) {
     onEvent({ type: 'FILTER_CHANGE', payload: { action: 'rowFilter', activeFilterIds: [...next] } });
   }
 
-  // Same precision rule the grid renders with, so search and CSV export show
-  // exactly what is on screen.
-  const precisionFor = (cellId: CellId): number | null =>
-    isDataCell(cellId) ? cfg.dataPrecision : null;
+  // Exactly what the grid renders — value at the binding's precision, with its
+  // unit — so search matches and CSV rows agree with the screen.
+  const displayTextFor = (cellId: CellId): string => {
+    const store = storeRef.current!;
+    const { precision, unit } = dataFormatFor(cellId);
+    const text = getDisplayValue(cellId, store, isDataCell(cellId) ? precision : null);
+    return text !== '' && unit ? `${text} ${unit}` : text;
+  };
 
   // ── In-table search ─────────────────────────────────────────────────────────
   // Matches are read from the store (display values, so a formula matches on
@@ -379,13 +483,13 @@ export function TableWidget(props: TableWidgetProps) {
       if (filterVisibility.hiddenRows.has(r)) continue;
       for (let c = 0; c < cfg.columns; c++) {
         const id = `R${r}C${c}` as CellId;
-        if (getDisplayValue(id, store, precisionFor(id)).toLowerCase().includes(q)) hits.push(id);
+        if (displayTextFor(id).toLowerCase().includes(q)) hits.push(id);
       }
     }
     return hits;
     // searchTick is an intentional recompute trigger, not a value dependency.
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [searchQuery, cfg.style.showSearch, cfg.rows, cfg.columns, cfg.dataPrecision, filterVisibility.hiddenRows, searchTick]);
+  }, [searchQuery, cfg.style.showSearch, cfg.rows, cfg.columns, bindingFormats, filterVisibility.hiddenRows, searchTick]);
 
   const [hitCursor, setHitCursor] = useState(0);
   // A changed query (or changed data) invalidates the old position.
@@ -401,30 +505,40 @@ export function TableWidget(props: TableWidgetProps) {
   // Export what the operator sees: display values (formulas evaluated, number
   // formats and precision applied), rows hidden by the active filter skipped.
   // Pure client-side file generation from the store — no fetching.
-  function buildCsv(): string {
+  // The visible table as a grid of strings — the one source both download
+  // formats are built from, so a CSV and an XLSX of the same table always hold
+  // the same values.
+  function visibleRows(): string[][] {
     const rows = geoRef.current?.rows ?? cfg.rows;
     const columns = geoRef.current?.columns ?? cfg.columns;
-    const store = storeRef.current!;
-    const escapeCsv = (v: string) => (/[",\n]/.test(v) ? `"${v.replace(/"/g, '""')}"` : v);
-    const lines: string[] = [];
+    const out: string[][] = [];
     for (let r = 0; r < rows; r++) {
       if (filterVisibility.hiddenRows.has(r)) continue;
       const cols: string[] = [];
-      for (let c = 0; c < columns; c++) {
-        cols.push(escapeCsv(getDisplayValue(`R${r}C${c}`, store, precisionFor(`R${r}C${c}`))));
-      }
-      lines.push(cols.join(','));
+      for (let c = 0; c < columns; c++) cols.push(displayTextFor(`R${r}C${c}`));
+      out.push(cols);
     }
-    return lines.join('\r\n');
+    return out;
   }
 
-  function handleExport() {
+  function buildCsv(): string {
+    const escapeCsv = (v: string) => (/[",\n]/.test(v) ? `"${v.replace(/"/g, '""')}"` : v);
+    return visibleRows().map((cols) => cols.map(escapeCsv).join(',')).join('\r\n');
+  }
+
+  // Download the visible table as CSV or XLSX. Same rows either way; the only
+  // difference is the blob handed to the link.
+  function handleExport(format: DownloadFormat) {
     const csv = buildCsv();
-    const fileName = `${(cfg.title.trim() || 'table').replace(/[\\/:*?"<>|]/g, '_')}.csv`;
+    const base = (cfg.title.trim() || 'table').replace(/[\\/:*?"<>|]/g, '_');
+    const fileName = `${base}.${format}`;
     let downloaded = false;
     try {
-      // BOM so Excel opens UTF-8 content correctly.
-      const blob = new Blob(['\uFEFF' + csv], { type: 'text/csv;charset=utf-8' });
+      const blob = format === 'xlsx'
+        // XLSX keeps numbers as numbers, so the file opens ready to sum.
+        ? buildXlsx(visibleRows().map((cols) => cols.map(toXlsxValue)), base)
+        // BOM so Excel opens UTF-8 CSV content correctly.
+        : new Blob(['\uFEFF' + csv], { type: 'text/csv;charset=utf-8' });
       const url = URL.createObjectURL(blob);
       const a = document.createElement('a');
       a.href = url;
@@ -438,23 +552,13 @@ export function TableWidget(props: TableWidgetProps) {
       setTimeout(() => { a.remove(); URL.revokeObjectURL(url); }, 2000);
       downloaded = true;
     } catch (err) {
-      console.error('[TableWidget] CSV download failed', err);
+      console.error(`[TableWidget] ${format.toUpperCase()} download failed`, err);
     }
     // The payload carries the file so a host that blocks anchor downloads (a
     // sandboxed iframe without allow-downloads, which is what makes the export
     // icon look dead) can save it through its own channel.
-    onEvent({ type: 'FILTER_CHANGE', payload: { action: 'export', fileName, csv, downloaded } });
+    onEvent({ type: 'FILTER_CHANGE', payload: { action: 'export', format, fileName, csv, downloaded } });
   }
-
-  // Cells carrying a binding — drives the corner indicator + topic tooltip so
-  // operators can tell live-bound cells apart from static ones at runtime, and
-  // locks them from manual typing (service-populated).
-  const boundCells = useMemo(
-    () => computeBoundCells(cfg.cellBindings, cfg.seriesBindings),
-    [cfg.cellBindings, cfg.seriesBindings],
-  );
-  const boundCellsRef = useRef(boundCells);
-  boundCellsRef.current = boundCells;
 
   // ── On-canvas Cell Config popover ──────────────────────────────────────────
   const [configCellId, setConfigCellId] = useState<string | null>(null);
@@ -684,64 +788,12 @@ export function TableWidget(props: TableWidgetProps) {
     return seriesPreviewCells(configCellId, dir, count, cfg.rows, cfg.columns);
   }, [configCellId, configKind, activeSeries, cfg.rows, cfg.columns]);
 
-  // ── Header actions: Table Settings (gear) + More (⋯) ───────────────────────
-  // Both panels are anchored off the actions group, so they open under the icon
-  // that was clicked instead of in the middle of the dashboard.
+  // ── Header actions: the Table Control popover ──────────────────────────────
+  // design-sdk's Popover owns placement and dismissal: a click inside the panel
+  // (ticking the checkbox, hitting a download) leaves it open, while the
+  // trigger toggles and an outside click or Escape closes it.
   const actionsRef = useRef<HTMLDivElement>(null);
   const [isSettingsOpen, setIsSettingsOpen] = useState(false);
-  const [settingsX, setSettingsX] = useState(0);
-  const [settingsY, setSettingsY] = useState(0);
-  const [moreMenu, setMoreMenu] = useState<{ x: number; y: number } | null>(null);
-
-  const SETTINGS_W = 300;
-  const MORE_W = 190;
-
-  function anchorRect(): DOMRect | null {
-    return actionsRef.current?.getBoundingClientRect() ?? null;
-  }
-
-  function openSettings() {
-    const rect = anchorRect();
-    setMoreMenu(null);
-    if (rect) {
-      // Right-aligned under the icon group, clamped into the viewport so the
-      // panel stays reachable when the widget sits at the edge of a dashboard.
-      setSettingsX(Math.max(8, Math.min(rect.right - SETTINGS_W, window.innerWidth - SETTINGS_W - 8)));
-      setSettingsY(Math.max(8, Math.min(rect.bottom + 8, window.innerHeight - 240)));
-    }
-    setIsSettingsOpen(true);
-  }
-
-  function toggleMoreMenu() {
-    setIsSettingsOpen(false);
-    setMoreMenu((prev) => {
-      if (prev) return null;
-      const rect = anchorRect();
-      if (!rect) return null;
-      return {
-        x: Math.max(8, Math.min(rect.right - MORE_W, window.innerWidth - MORE_W - 8)),
-        y: rect.bottom + 4,
-      };
-    });
-  }
-
-  // Dismiss the More menu the way every other menu on the page behaves. Clicks
-  // on the action group itself are left alone — closing there would fight the
-  // toggle, so a second click on ⋯ would close and immediately reopen.
-  useEffect(() => {
-    if (!moreMenu) return;
-    function onDown(e: MouseEvent) {
-      if (actionsRef.current?.contains(e.target as Node)) return;
-      setMoreMenu(null);
-    }
-    function onKey(e: KeyboardEvent) { if (e.key === 'Escape') setMoreMenu(null); }
-    document.addEventListener('mousedown', onDown);
-    document.addEventListener('keydown', onKey);
-    return () => {
-      document.removeEventListener('mousedown', onDown);
-      document.removeEventListener('keydown', onKey);
-    };
-  }, [moreMenu]);
 
   // Horizontal-scroll setting. Held locally as well as in the envelope: the cfg
   // prop only catches up after the host round-trips our CONFIG_CHANGE, and a
@@ -797,7 +849,22 @@ export function TableWidget(props: TableWidgetProps) {
   };
 
   return (
-    <div className="tw-widget" style={cardInlineStyle}>
+    <div
+      className="tw-widget"
+      style={cardInlineStyle}
+      // Double-click asks the host to open this widget's configuration panel in
+      // edit mode. The widget cannot open it itself (Lens owns configurator
+      // hosting), so it emits the intent and lets the gesture keep bubbling —
+      // a host that listens for dblclick on the widget container still sees it.
+      //
+      // Cells that DO something with a double-click (entering cell edit mode on
+      // an unlocked table) stop propagation themselves, so the two never fire
+      // for the same gesture.
+      onDoubleClick={(e) => {
+        if (isControlTarget(e.target)) return;
+        onEvent({ type: 'EDIT_WIDGET', payload: { editMode: true } });
+      }}
+    >
       {/* The action group is always present, so the topbar always renders. */}
       <div className="tw-topbar">
           {showHeader && (
@@ -812,51 +879,123 @@ export function TableWidget(props: TableWidgetProps) {
           )}
           <div className="tw-topbar__actions">
             {showSearch && (
-              <div className="tw-search">
+              <div
+                className="tw-search"
+                // The find-box convention, as in VS Code: Enter walks to the
+                // next match, Shift+Enter back to the previous one. Handled on
+                // the wrapper rather than through SearchInput's own onSubmit,
+                // which only knows about Enter and would fire a second step.
+                onKeyDown={(e: React.KeyboardEvent) => {
+                  if (e.key !== 'Enter') return;
+                  e.preventDefault();
+                  stepHit(e.shiftKey ? -1 : 1);
+                }}
+              >
                 <SearchInput
                   placeholder="Search table…"
                   inputValue={searchQuery}
                   showSearchIcon
                   showClearButton
+                  // Held closed: SearchInput's suggestions popover has no
+                  // suggestions to show here (the matches are the cells
+                  // themselves), and left uncontrolled it opens on every
+                  // keystroke with "No results found" — a panel covering the
+                  // very table the query just highlighted.
+                  isOpen={false}
+                  onOpenChange={() => {}}
                   onInputChange={(value: string) => setSearchQuery(value)}
                   onClearButtonClicked={() => setSearchQuery('')}
-                  onSubmit={() => stepHit(1)}
                 />
                 {searchQuery.trim() !== '' && (
                   <div className="tw-search__nav">
-                    <span className="tw-search__count">
-                      {searchHits.length === 0 ? '0/0' : `${(hitCursor % searchHits.length) + 1}/${searchHits.length}`}
+                    <span
+                      className={`tw-search__count${searchHits.length === 0 ? ' tw-search__count--empty' : ''}`}
+                      aria-live="polite"
+                    >
+                      {searchHits.length === 0
+                        ? 'No results'
+                        : `${(hitCursor % searchHits.length) + 1} of ${searchHits.length}`}
                     </span>
-                    <Button
-                      iconOnly
-                      aria-label="Previous match"
-                      leadingIcon={<ChevronUp size={13} />}
-                      variant="Gray"
-                      size="XSmall"
-                      isDisabled={searchHits.length === 0}
-                      onClick={() => stepHit(-1)}
-                    />
-                    <Button
-                      iconOnly
-                      aria-label="Next match"
-                      leadingIcon={<ChevronDown size={13} />}
-                      variant="Gray"
-                      size="XSmall"
-                      isDisabled={searchHits.length === 0}
-                      onClick={() => stepHit(1)}
-                    />
+                    <Tooltip bodyText="Previous match" placement="Bottom">
+                      <Button
+                        iconOnly
+                        aria-label="Previous match"
+                        leadingIcon={<ChevronUp size={13} />}
+                        variant="Gray"
+                        size="XSmall"
+                        isDisabled={searchHits.length === 0}
+                        onClick={() => stepHit(-1)}
+                      />
+                    </Tooltip>
+                    <Tooltip bodyText="Next match" placement="Bottom">
+                      <Button
+                        iconOnly
+                        aria-label="Next match"
+                        leadingIcon={<ChevronDown size={13} />}
+                        variant="Gray"
+                        size="XSmall"
+                        isDisabled={searchHits.length === 0}
+                        onClick={() => stepHit(1)}
+                      />
+                    </Tooltip>
                   </div>
                 )}
               </div>
             )}
-            <div className="tw-actions" ref={actionsRef}>
-              <ChartActions
-                settingsLabel="Table settings"
-                moreLabel="More actions"
-                onSettingsClick={openSettings}
-                onMoreClick={toggleMoreMenu}
-              />
-            </div>
+            {/* Locked mode only: every control in here acts on a finished,
+                read-only table (the scroll behaviour, the download of what is
+                on screen). While the table is still being edited they would
+                either do nothing or fight the editing surface. */}
+            {cfg.locked && (
+              <div className="tw-actions" ref={actionsRef}>
+                <Popover
+                  isOpen={isSettingsOpen}
+                  onOpenChange={(open: boolean) => setIsSettingsOpen(open)}
+                  placement="Bottom End"
+                  trigger={
+                    <ChartActions settingsLabel="Table settings" onSettingsClick={() => {}} />
+                  }
+                >
+                  {/* showClose defaults to true — the whole point of moving off
+                      the Modal was to drop the close button, so it is off. */}
+                  <PopoverHeader title="Table Control" showClose={false} />
+                  <PopoverBody>
+                    <div className="tw-settings__body">
+                      <Checkbox
+                        label="Horizontal Scrollbar"
+                        helpText="Columns keep their own width and scroll horizontally, instead of every column being compacted to fit the widget."
+                        checked={hScroll}
+                        onChange={(e: React.ChangeEvent<HTMLInputElement>) => handleScrollToggle(e.target.checked)}
+                      />
+
+                      {showExportButton && (
+                        <>
+                          {/* Same typography as the popover's own header, so the
+                              two sections read as siblings. */}
+                          <h3 className="tw-settings__heading BodyLargeSemibold">Download Type</h3>
+                          <div className="tw-settings__downloads">
+                            <Button
+                              variant="Secondary"
+                              size="XSmall"
+                              leadingIcon={<Download size={13} />}
+                              label="CSV"
+                              onClick={() => handleExport('csv')}
+                            />
+                            <Button
+                              variant="Secondary"
+                              size="XSmall"
+                              leadingIcon={<Download size={13} />}
+                              label="XLSX"
+                              onClick={() => handleExport('xlsx')}
+                            />
+                          </div>
+                        </>
+                      )}
+                    </div>
+                  </PopoverBody>
+                </Popover>
+              </div>
+            )}
           </div>
         </div>
 
@@ -930,7 +1069,7 @@ export function TableWidget(props: TableWidgetProps) {
           tableBorderStyle={cfg.style.tableBorderStyle}
           boundCells={boundCells}
           previewCells={previewCells}
-          dataPrecision={cfg.dataPrecision}
+          dataFormatFor={dataFormatFor}
           isDataCell={isDataCell}
           searchMatches={searchMatchSet}
           activeMatch={activeHit}
@@ -940,56 +1079,6 @@ export function TableWidget(props: TableWidgetProps) {
           onUserChange={editable && !cfg.locked ? handleGridChange : undefined}
         />
       </div>
-
-      {/* ── More (⋯) menu ── */}
-      {moreMenu && (
-        <div
-          className="tw-menu"
-          style={{ top: moreMenu.y, left: moreMenu.x, width: MORE_W }}
-          onMouseDown={(e) => e.stopPropagation()}
-        >
-          {showExportButton ? (
-            <button
-              className="tw-menu__item"
-              onClick={() => { setMoreMenu(null); handleExport(); }}
-            >
-              <Download size={13} /> Download CSV
-            </button>
-          ) : (
-            <p className="tw-menu__empty">No actions available</p>
-          )}
-        </div>
-      )}
-
-      {/* ── Table Settings (gear) ── */}
-      {isSettingsOpen && (
-        <Modal
-          isOpen={isSettingsOpen}
-          positionX={settingsX}
-          positionY={settingsY}
-          className="tw-settings-modal"
-          onClose={() => setIsSettingsOpen(false)}
-          header={<ModalHeader title="Table settings" onClose={() => setIsSettingsOpen(false)} />}
-        >
-          <ModalBody>
-            <div className="tw-settings__body">
-              <Checkbox
-                label="Scroll bar"
-                helpText="Available in lock mode. Columns keep their own width and scroll horizontally, instead of every column being compacted to fit the widget."
-                checked={hScroll}
-                isDisabled={!cfg.locked}
-                onChange={(e: React.ChangeEvent<HTMLInputElement>) => handleScrollToggle(e.target.checked)}
-              />
-              {!cfg.locked && (
-                <p className="tw-settings__note">
-                  Lock the table layout to use this — an unlocked table already scrolls in both
-                  directions.
-                </p>
-              )}
-            </div>
-          </ModalBody>
-        </Modal>
-      )}
 
       {/* ── Cell Config popover (double-click a cell when editable) ── */}
       {editable && configCellId && (

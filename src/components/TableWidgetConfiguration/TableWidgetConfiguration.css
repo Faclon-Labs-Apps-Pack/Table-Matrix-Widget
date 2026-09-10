@@ -67,6 +67,14 @@
   padding: var(--spacing-02, 4px) 0 var(--spacing-03, 8px);
 }
 
+/* The first section of every tab has no accordion around it, so it supplies the
+   horizontal padding the accordion body used to and closes with the same
+   hairline the accordion headers draw between themselves. */
+.wt-section--lead {
+  padding: var(--spacing-04, 12px) var(--spacing-05, 16px);
+  border-bottom: 1px solid var(--border-gray-subtle, #DEE1E3);
+}
+
 /* ── Field: label + a control that carries none of its own ──
    overflow-x is a safety net: a segmented group is `inline-flex` with no
    wrap, so a future label change that pushes it past 224px scrolls here
@@ -113,7 +121,7 @@
   pointer-events: none;
 }
 
-/* ── Rows / Columns: type-only counters ──────────────────────────────────
+/* ── Type-only counters (rows, columns, and every Style-tab number) ──────
    CounterInput ships +/- buttons with no prop to suppress them (checked the
    installed 0.7.x CounterInput.d.ts), so hide its trailing slot. The class is
    forwarded onto the component's own root element, which keeps this override
@@ -322,4 +330,10 @@
   border-color: var(--background-brand-default, #0073ea);
   color: var(--background-brand-default, #0073ea);
   background: var(--background-info-secondary, #e8f4fd);
+}
+
+/* Why the panel refused to add the entry — sits with the field it is about. */
+.wt-detail__error {
+  margin: 0;
+  color: var(--text-error-primary, #c0392b);
 }

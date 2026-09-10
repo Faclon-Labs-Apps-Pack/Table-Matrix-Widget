@@ -69,7 +69,17 @@ export type WidgetEvent =
   // dynamicBindingPathList is rebuilt BY THE WIDGET and carried in the payload
   // so the "binding index always matches uiConfig" invariant holds even for
   // hosts that just persist the payload verbatim.
-  | { type: 'CONFIG_CHANGE'; payload: { uiConfig: TableWidgetUIConfig; dynamicBindingPathList: BindingPath[] } };
+  | { type: 'CONFIG_CHANGE'; payload: { uiConfig: TableWidgetUIConfig; dynamicBindingPathList: BindingPath[] } }
+  // Double-click on the widget: "open my configuration panel, in edit mode".
+  //
+  // Opening the configurator is the host's job — the ownership table in the
+  // architecture doc puts "Configurator hosting" squarely with Lens, and the
+  // widget has no handle on the panel. The documented event catalog carries no
+  // edit intent (TIME_CHANGE / FILTER_CHANGE only), so this follows the same
+  // shape as the rest of the protocol and the router decides what to do; a host
+  // that does not know the type ignores it, and the dblclick still bubbles out
+  // of the widget for a host that listens on the container itself.
+  | { type: 'EDIT_WIDGET'; payload: { widgetId?: string; editMode: true } };
 
 export type TextAlign = 'left' | 'center' | 'right';
 export type NumberFormat = 'general' | 'number' | 'percent' | 'currency' | 'integer';
@@ -102,8 +112,9 @@ export interface CellFormat {
   cellColor: string;          // CSS hex or '' (transparent)
   borders: CellBorders;
   link: string;               // URL opened on click; '' = no link
-  /** Decimal places for this cell's numeric value. null = inherit the widget's
-   *  `dataPrecision`; a number overrides it (0-10). */
+  /** Decimal places for this cell's numeric value. null = inherit whatever the
+   *  binding that fills the cell asks for (nothing, for an unbound cell); a
+   *  number overrides it (0-10). */
   decimals: number | null;
 }
 
@@ -150,6 +161,19 @@ export interface ConditionalRule {
 export interface CellBinding {
   cellId: string;  // "R{row}C{col}" — zero-indexed
   topic: string;   // mapped UNS path, stored wrapped as "{{uns:wsId://path}}"
+  /** Suffix shown after the resolved value ("kWh"). '' / absent = no unit. */
+  unit?: string;
+  /** Decimal places for this binding's value. null / absent = show the value
+   *  exactly as it resolved. Both of these apply only when set. */
+  precision?: number | null;
+}
+
+/** What a binding asks the cells it fills to show. The resolved form of the
+ *  binding's optional `unit` / `precision`: `precision: null` means "leave the
+ *  number as it resolved" and `unit: ''` means "no suffix". */
+export interface DataFormat {
+  precision: number | null;
+  unit: string;
 }
 
 // Series population: a single base cell is bound to a topic that resolves to an
@@ -163,6 +187,11 @@ export interface SeriesBinding {
   topic: string;               // mapped UNS path, "{{uns:wsId://path}}" (resolves to an array)
   direction: SeriesDirection;  // layout direction from the base cell
   limit: number;               // max cells to fill; 0 = no cap (fill whole array)
+  /** Suffix shown after every value the series fills ("kWh"). '' / absent = none. */
+  unit?: string;
+  /** Decimal places for every value the series fills. null / absent = show them
+   *  exactly as they resolved. Both apply only when set. */
+  precision?: number | null;
 }
 
 export type RowFilterType = 'chips' | 'dropdown';
@@ -227,9 +256,6 @@ export interface TableWidgetUIConfig {
   cellBindings: CellBinding[];
   seriesBindings: SeriesBinding[];
   rowFilter: RowFilterConfig;
-  /** Default decimal places for numeric values that carry no per-cell override.
-   *  null = render the value exactly as it resolved. */
-  dataPrecision: number | null;
   /** Whether time-bucketed (series) data is labelled in the viewer's local
    *  timezone or in UTC. Also drives the mini-engine's resolve request. */
   timeDisplay: TimeDisplayMode;

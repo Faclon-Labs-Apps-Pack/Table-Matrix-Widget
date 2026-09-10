@@ -10,6 +10,9 @@ import './App.css';
 
 export default function App() {
   const [envelope, setEnvelope] = useState<TableWidgetEnvelope | undefined>(undefined);
+  // Double-click on the widget → EDIT_WIDGET → the harness flags the panel.
+  const [configFlash, setConfigFlash] = useState(false);
+  const configRef = useRef<HTMLDivElement>(null);
   const [data, setData] = useState<DataEntry[]>([]);
   const [auth, setAuth] = useState<string>(localStorage.getItem('bearer_token') ?? '');
   const [timeOverride, setTimeOverride] = useState<{ startTime: number; endTime: number } | undefined>(undefined);
@@ -84,6 +87,13 @@ export default function App() {
         startTime: Number(event.payload.startTime),
         endTime: Number(event.payload.endTime),
       });
+    } else if (event.type === 'EDIT_WIDGET') {
+      // Lens opens the configuration panel here. The harness always shows it,
+      // so it does the visible equivalent: brings it to attention, which is
+      // enough to prove the intent reaches the host.
+      setConfigFlash(true);
+      window.setTimeout(() => setConfigFlash(false), 1200);
+      configRef.current?.scrollIntoView({ block: 'nearest', behavior: 'smooth' });
     } else if (event.type === 'CONFIG_CHANGE') {
       // Widget edited config on the canvas. The payload carries the rebuilt
       // binding index (the widget enforces the list-matches-uiConfig
@@ -100,7 +110,7 @@ export default function App() {
 
   return (
     <div className="app">
-      <div className="app__config">
+      <div className={`app__config${configFlash ? ' app__config--flash' : ''}`} ref={configRef}>
         <TableWidgetConfiguration
           config={envelope}
           authentication={auth}

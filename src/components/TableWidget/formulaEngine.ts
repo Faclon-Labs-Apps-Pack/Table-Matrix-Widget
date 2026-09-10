@@ -19,7 +19,8 @@ function toNumber(value: string): number | null {
 /** Render a raw cell value for display.
  *
  *  `decimals` is the effective precision — the cell's own `format.decimals`
- *  when set, otherwise the widget-level `dataPrecision`. `null` means "leave
+ *  when set, otherwise whatever the binding filling the cell asks for. `null`
+ *  means "leave
  *  the number exactly as it resolved", which is what a topic returning
  *  37619474.13795926 needs when the operator wants every digit. */
 export function applyNumberFormat(
@@ -170,8 +171,8 @@ export function getComputedValue(cellId: CellId, store: CellDataStore): string {
 }
 
 /** Display string for a cell: formula evaluated, then number-formatted.
- *  `defaultDecimals` is the widget's `dataPrecision`; a cell's own
- *  `format.decimals` overrides it. */
+ *  `defaultDecimals` is the precision the cell's binding asks for (null when it
+ *  asks for none); a cell's own `format.decimals` overrides it. */
 export function getDisplayValue(
   cellId: CellId,
   store: CellDataStore,

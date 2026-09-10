@@ -1,14 +1,17 @@
 import { useState, useEffect, useRef } from 'react';
 import { useVirtualizer } from '@tanstack/react-virtual';
-import { Button, Popover, PopoverHeader, PopoverBody, ColorInput, TextInput } from '@faclon-labs/design-sdk';
+import { Button, Popover, PopoverHeader, PopoverBody, ColorInput, TextInput, Tooltip } from '@faclon-labs/design-sdk';
 import { Bold, Italic, Underline, AlignLeft, AlignCenter, AlignRight, Grid, Droplet, Type, Link as LinkIcon, Hash, Settings, XSquare } from 'react-feather';
+import { ColorTool } from './ColorTool';
 import { CellDataStore, CellId, makeDefaultFormat } from './CellDataStore';
 import { BoundInfo, GridMutation } from './bindingMap';
 import { getDisplayValue, getComputedValue, evaluateConditionalRules } from './formulaEngine';
-import { CellFormat, CellBorders, CellBorderSide, BorderStyle, BorderWidth, TextAlign, NumberFormat, ConditionalRule, TableBorderStyle } from '../../iosense-sdk/types';
+import { CellFormat, CellBorders, CellBorderSide, BorderStyle, BorderWidth, TextAlign, NumberFormat, ConditionalRule, TableBorderStyle, DataFormat } from '../../iosense-sdk/types';
 import './VirtualGrid.css';
 
 const ROW_HEIGHT = 32;
+const MIN_FONT_SIZE = 8;
+const MAX_FONT_SIZE = 72;
 const ROW_NUM_WIDTH = 40;
 const COL_WIDTH = 100;
 const MIN_COL_WIDTH = 30;
@@ -51,7 +54,10 @@ interface VirtualGridProps {
    *  override. null = render the resolved number untouched. Manually typed
    *  content is never rounded by this — "10" typed by hand must not become
    *  "10.00" because a data topic elsewhere wanted 2 decimals. */
-  dataPrecision?: number | null;
+  /** Display rules contributed by the binding that fills a cell — decimals to
+   *  round to (null = leave the number alone) and a unit suffix ('' = none).
+   *  Absent for an unbound grid (the configurator preview). */
+  dataFormatFor?: (cellId: CellId) => DataFormat;
   /** Whether a cell's value came from the data prop (a binding or a series
    *  spill). Called at render time so it stays correct as data arrives without
    *  needing the parent to re-render. */
@@ -226,6 +232,29 @@ function cellBorderInlineStyle(borders: CellBorders): React.CSSProperties {
   return result;
 }
 
+// Toolbar icon button. Every tool in the toolbar carries a hover label, so the
+// button and its Tooltip are built together — the label doubles as the
+// accessible name, which keeps the two from drifting apart.
+function ToolButton({ label, icon, isActive, onClick }: {
+  label: string;
+  icon: React.ReactNode;
+  isActive?: boolean;
+  onClick?: () => void;
+}) {
+  return (
+    <Tooltip bodyText={label} placement="Bottom">
+      <Button
+        iconOnly
+        aria-label={label}
+        leadingIcon={icon}
+        variant={isActive ? 'Primary' : 'Gray'}
+        size="XSmall"
+        onClick={onClick}
+      />
+    </Tooltip>
+  );
+}
+
 // Wheel-on-hover for the toolbar's two native number inputs: no click needed,
 // and the gesture never also scrolls the toolbar underneath.
 //
@@ -258,14 +287,23 @@ function attachWheelStep(input: HTMLInputElement | null): void {
   }, { passive: false });
 }
 
-export function VirtualGrid({ rows, columns, freezeRows, freezeColumns, configColWidths, configRowHeights, store, conditionalRules, locked = false, horizontalScroll = false, tableBorderStyle = 'all', boundCells, previewCells, dataPrecision = null, isDataCell, searchMatches, activeMatch, onCellConfigure, hiddenRows, rowColors, onUserChange }: VirtualGridProps) {
+export function VirtualGrid({ rows, columns, freezeRows, freezeColumns, configColWidths, configRowHeights, store, conditionalRules, locked = false, horizontalScroll = false, tableBorderStyle = 'all', boundCells, previewCells, dataFormatFor, isDataCell, searchMatches, activeMatch, onCellConfigure, hiddenRows, rowColors, onUserChange }: VirtualGridProps) {
   // Bound cells are service-populated — never manually editable.
   const isBound = (cellId: CellId) => boundCells?.has(cellId) ?? false;
-  // Effective precision for one cell: the widget default applies only to
+  // Effective precision for one cell: the binding's precision applies only to
   // service-populated values; a per-cell override (set from the toolbar) wins
-  // over both and is handled inside getDisplayValue.
+  // over it and is handled inside getDisplayValue.
   const decimalsFor = (cellId: CellId): number | null =>
-    (isDataCell?.(cellId) ?? isBound(cellId)) ? dataPrecision : null;
+    (isDataCell?.(cellId) ?? isBound(cellId)) ? (dataFormatFor?.(cellId).precision ?? null) : null;
+
+  // What the cell shows: the value at that precision, plus the binding's unit
+  // when it has one. Every place that paints, copies or measures cell text goes
+  // through here so the suffix can never appear in one and not the others.
+  const displayText = (cellId: CellId): string => {
+    const text = getDisplayValue(cellId, store, decimalsFor(cellId));
+    const unit = dataFormatFor?.(cellId).unit ?? '';
+    return text !== '' && unit ? `${text} ${unit}` : text;
+  };
   // Live refs for the document-level copy/paste listeners (registered once with
   // [store] deps) — without them the handlers keep mount-time values forever,
   // e.g. paste staying dead after the widget is unlocked.
@@ -405,24 +443,31 @@ export function VirtualGrid({ rows, columns, freezeRows, freezeColumns, configCo
     if (m) scrollToRef.current?.(parseInt(m[1], 10), parseInt(m[2], 10));
   }, [activeMatch]);
 
-  // ── Fit-to-width (locked mode) ────────────────────────────────────────────
-  // A locked table is a finished read-only surface: every column has to be on
-  // screen at once, with no strip of background showing past the last one.
-  // Scaling all column widths by a single factor keeps the operator's relative
-  // proportions intact. Rows are deliberately NOT scaled — squeezing 200 rows
-  // into the widget height makes them unreadable, so the table scrolls
-  // vertically instead.
+  // ── Fit to the widget (locked mode) ───────────────────────────────────────
+  // A locked table is a finished read-only surface: it should fill its tile,
+  // not float in the top-left corner of it. Both axes scale by a single factor,
+  // which keeps the operator's relative proportions intact.
   //
-  // clientWidth (not contentRect.width) is what the columns must add up to: it
-  // already excludes the vertical scrollbar, so the fit doesn't overflow by the
-  // scrollbar's width the moment the rows are taller than the box.
+  // The two axes have different rules:
+  //  • Columns are compacted to fit whenever the Horizontal Scrollbar setting
+  //    is off — every column on screen, no strip of background past the last.
+  //  • Rows only ever GROW, and only while the columns fit across. A table wide
+  //    enough to scroll keeps its row heights and shows the scrollbar, and 200
+  //    rows squeezed into a tile would be unreadable, so rows are never shrunk.
+  //
+  // clientWidth/clientHeight (not contentRect) are what the tracks must add up
+  // to: they already exclude the scrollbars, so a fit can't overflow by a
+  // scrollbar's width the moment the content crosses the box.
   const [viewportW, setViewportW] = useState<number | null>(null);
+  const [viewportH, setViewportH] = useState<number | null>(null);
   useEffect(() => {
     const el = gridWrapRef.current;
     if (!el || typeof ResizeObserver === 'undefined') return;
     const measure = () => {
       const w = el.clientWidth;
+      const h = el.clientHeight;
       setViewportW((prev) => (prev !== null && Math.abs(prev - w) < 0.5 ? prev : w));
+      setViewportH((prev) => (prev !== null && Math.abs(prev - h) < 0.5 ? prev : h));
     };
     const ro = new ResizeObserver(measure);
     ro.observe(el);
@@ -456,11 +501,21 @@ export function VirtualGrid({ rows, columns, freezeRows, freezeColumns, configCo
     .map((h, i) => (hiddenRows?.has(i) ? 0 : h));
   const naturalColWidths = colWidths.slice(0, localCols);
 
-  // Locked with the Scroll bar setting off: compact the columns into the box.
-  // Locked with it on, or unlocked: natural widths, the wrapper scrolls.
+  // Locked with the Horizontal Scrollbar setting off: compact the columns into
+  // the box. Locked with it on, or unlocked: natural widths, the wrapper
+  // scrolls.
   const fitToWidth = locked && !horizontalScroll && viewportW !== null && viewportW > 0;
-  const effectiveRowHeights = naturalRowHeights;
-  const layoutColWidths     = fitToWidth ? fitSizes(naturalColWidths, viewportW) : naturalColWidths;
+  const layoutColWidths = fitToWidth ? fitSizes(naturalColWidths, viewportW) : naturalColWidths;
+
+  // Rows fill the remaining height only when the columns are all on screen —
+  // compacted to fit, or narrow enough not to need it. The moment the table is
+  // wide enough to scroll sideways, row heights are left exactly as they are.
+  const naturalRowTotal = naturalRowHeights.reduce((sum, h) => sum + h, 0);
+  const columnsFit =
+    fitToWidth || (viewportW !== null && layoutColWidths.reduce((sum, w) => sum + w, 0) <= viewportW);
+  const fillHeight =
+    locked && columnsFit && viewportH !== null && viewportH > 0 && naturalRowTotal > 0 && naturalRowTotal < viewportH;
+  const effectiveRowHeights = fillHeight ? fitSizes(naturalRowHeights, viewportH) : naturalRowHeights;
 
   const rowVirt = useVirtualizer({
     count: localRows,
@@ -533,7 +588,7 @@ export function VirtualGrid({ rows, columns, freezeRows, freezeColumns, configCo
         const cols: string[] = [];
         for (let c = minC; c <= maxC; c++) {
           const id: CellId = `R${r}C${c}`;
-          cols.push(cells.has(id) ? getDisplayValue(id, store, decimalsFor(id)) : '');
+          cols.push(cells.has(id) ? displayText(id) : '');
         }
         lines.push(cols.join('\t'));
       }
@@ -624,6 +679,23 @@ export function VirtualGrid({ rows, columns, freezeRows, freezeColumns, configCo
     requestAnimationFrame(() => gridWrapRef.current?.focus());
   }
 
+  // Move to a neighbouring cell and keep typing there. Enter and Tab carry edit
+  // mode with them the way a spreadsheet does, so a column of values can be
+  // filled without reaching for the mouse. A cell that cannot be typed into (a
+  // bound one) is selected instead, which is as far as the gesture can go.
+  function editNext(row: number, col: number) {
+    const r = Math.max(0, Math.min(localRows - 1, row));
+    const c = Math.max(0, Math.min(localCols - 1, col));
+    const id: CellId = `R${r}C${c}`;
+    if (isBound(id)) { navigateTo(r, c); return; }
+    setSelectedCells(new Set([id]));
+    rowVirt.scrollToIndex(r, { align: 'auto' });
+    colVirt.scrollToIndex(c, { align: 'auto' });
+    // One frame for the virtualizer to mount the row if it was off screen —
+    // enterEditMode needs the element to exist before it can focus it.
+    requestAnimationFrame(() => enterEditMode(id));
+  }
+
   // ── Enter edit mode for a cell ────────────────────────────────────────────
   function enterEditMode(cellId: CellId, initialChar?: string) {
     const m = /^R(\d+)C(\d+)$/.exec(cellId);
@@ -689,7 +761,7 @@ export function VirtualGrid({ rows, columns, freezeRows, freezeColumns, configCo
         requestAnimationFrame(() => {
           if (document.activeElement !== editingEl)
             {
-            editingEl.textContent = getDisplayValue(prev, store, decimalsFor(prev));
+            editingEl.textContent = displayText(prev);
             editingEl.scrollLeft = 0;
           }
         });
@@ -705,6 +777,21 @@ export function VirtualGrid({ rows, columns, freezeRows, freezeColumns, configCo
     } else {
       setSelectedCells(new Set([cellId]));
     }
+
+    // Edit mode is sticky: clicking a second cell while one is being typed in
+    // keeps typing, in the cell just clicked. onMouseDown already let the click
+    // through to the browser (it only blocks focus when nothing is being
+    // edited) and onFocus turned that into a real edit session, so all this has
+    // to do is NOT drag focus back to the grid wrapper — which is exactly what
+    // used to drop the new cell back to a plain highlight.
+    if (editingCellRef.current === cellId) {
+      const el = cellRefsMap.current.get(cellId);
+      // The caret lands wherever the pointer did; the convention here is the
+      // end of the existing text, as when edit mode is entered any other way.
+      if (el) requestAnimationFrame(() => moveCursor(el, el.textContent?.length ?? 0));
+      return;
+    }
+
     requestAnimationFrame(() => gridWrapRef.current?.focus());
   }
 
@@ -857,28 +944,62 @@ export function VirtualGrid({ rows, columns, freezeRows, freezeColumns, configCo
   const currentCellColor           = firstFmt?.cellColor    ?? '';
   const currentNumberFormat: NumberFormat = firstFmt?.numberFormat ?? 'general';
   const currentDecimals: number | null     = firstFmt?.decimals     ?? null;
+  // What an empty decimals field falls back to for the anchor cell: the
+  // precision its binding asks for, or nothing at all when it has none.
+  const inheritedDecimals = hasSelection ? decimalsFor(selectedArr[0]) : null;
 
   const currentLink = firstFmt?.link ?? '';
 
   // Draft for the link popover input — re-seeded whenever the anchor cell of
   // the selection changes so the field always shows that cell's current link.
+  // Font size is edited as text, not as a number: select-all + Backspace has to
+  // leave the box empty, and the "1" of "12" must not be committed as a size on
+  // its way past the 8-72 range. The draft holds whatever is in the box; only a
+  // value inside the range reaches the cells, and blur settles the rest.
+  const [fontSizeDraft, setFontSizeDraft] = useState<string | null>(null);
+
   const [linkDraft, setLinkDraft] = useState('');
+  const [linkError, setLinkError] = useState('');
+  // The popover is controlled so Apply / Cancel can close it: a panel that
+  // stays open after Apply reads as "the button did nothing", especially since
+  // the link itself only shows up on click.
+  const [linkOpen, setLinkOpen] = useState(false);
   const linkAnchor = selectedArr[0] ?? '';
   useEffect(() => {
     setLinkDraft(linkAnchor ? store.getFormat(linkAnchor).link : '');
+    setLinkError('');
   }, [linkAnchor, store]);
+
+  function closeLinkPanel() {
+    setLinkDraft(currentLink);
+    setLinkError('');
+    setLinkOpen(false);
+  }
+
+  // Apply writes the URL the user typed, not a guess: bare "example.com" is
+  // given https:// (window.open would otherwise treat it as a path relative to
+  // the dashboard and open a dead tab), and an empty field clears the link
+  // rather than storing "".
+  function applyLink() {
+    const raw = linkDraft.trim();
+    if (raw === '') {
+      applyFmt({ link: '' });
+      setLinkOpen(false);
+      return;
+    }
+    if (/\s/.test(raw)) {
+      setLinkError('A URL cannot contain spaces');
+      return;
+    }
+    const url = /^[a-z][a-z0-9+.-]*:/i.test(raw) ? raw : `https://${raw}`;
+    applyFmt({ link: url });
+    setLinkDraft(url);
+    setLinkError('');
+    setLinkOpen(false);
+  }
 
   const isSideActive = (side: keyof CellBorders) =>
     hasSelection && selectedArr.every((id) => store.getFormat(id).borders[side].enabled);
-
-  // Keyboard activation for the div-based popover triggers (role="button") —
-  // Enter/Space must work wherever click does.
-  const keyActivate = (e: React.KeyboardEvent) => {
-    if (e.key === 'Enter' || e.key === ' ') {
-      e.preventDefault();
-      (e.currentTarget as HTMLElement).click();
-    }
-  };
 
   function applyFmt(patch: Partial<CellFormat>) {
     selectedArr.forEach((id) => store.setFormat(id, { ...store.getFormat(id), ...patch }));
@@ -1113,7 +1234,7 @@ export function VirtualGrid({ rows, columns, freezeRows, freezeColumns, configCo
             const el = e.currentTarget;
             const clipped = el.scrollWidth > el.clientWidth;
             const anchor = bound ? bound.topic : (fmt.link || '');
-            const full = clipped ? getDisplayValue(cellId, store, decimalsFor(cellId)) : '';
+            const full = clipped ? displayText(cellId) : '';
             // The topic / link stays on the second line so the binding
             // affordance is not lost when a value happens to be long.
             const text = [full, anchor].filter(Boolean).join('\n');
@@ -1125,7 +1246,7 @@ export function VirtualGrid({ rows, columns, freezeRows, freezeColumns, configCo
               cellRefsMap.current.set(cellId, el);
               // Don't overwrite content while this cell is in edit mode
               if (editingCellRef.current !== cellId && document.activeElement !== el) {
-                el.textContent = getDisplayValue(cellId, store, decimalsFor(cellId));
+                el.textContent = displayText(cellId);
                 // Rewind the scroll the caret left behind, so a long value is
                 // shown from its start and its ellipsis lands at the right edge.
                 el.scrollLeft = 0;
@@ -1140,6 +1261,12 @@ export function VirtualGrid({ rows, columns, freezeRows, freezeColumns, configCo
             if (locked || bound) { e.preventDefault(); return; }
             // Formula pick mode: keep focus on the formula cell
             if (formulaEditingCell && formulaEditingCell !== cellId) {
+              e.preventDefault();
+              return;
+            }
+            // Ctrl/Cmd-click is a selection gesture, not a typing one: it must
+            // extend the selection without carrying edit mode into the cell.
+            if (e.ctrlKey || e.metaKey) {
               e.preventDefault();
               return;
             }
@@ -1161,8 +1288,11 @@ export function VirtualGrid({ rows, columns, freezeRows, freezeColumns, configCo
             handleCellClick(e, cellId);
           }}
           onDoubleClick={(e) => {
-            e.stopPropagation();
+            // A locked table has nothing to edit in-cell, so the gesture is left
+            // to bubble: the widget turns it into "open my config panel". Only
+            // stop propagation when this cell is actually going to act on it.
             if (locked) return;
+            e.stopPropagation();
             // Standard spreadsheet convention: double-click edits the cell's
             // text. Bound cells aren't manually editable, so there double-click
             // opens the binding popover instead; unbound cells reach it via
@@ -1213,8 +1343,8 @@ export function VirtualGrid({ rows, columns, freezeRows, freezeColumns, configCo
           onKeyDown={(e) => {
             if (e.key === 'Enter') {
               e.preventDefault();
-              e.currentTarget.blur();
-              navigateTo(row + 1, col);
+              e.currentTarget.blur();   // commits this cell through onBlur
+              editNext(row + 1, col);
             } else if (e.key === 'Tab') {
               e.preventDefault();
               e.currentTarget.blur();
@@ -1222,7 +1352,7 @@ export function VirtualGrid({ rows, columns, freezeRows, freezeColumns, configCo
               let nr = row, nc = col + dc;
               if (nc >= localCols) { nc = 0; nr++; }
               if (nc < 0) { nc = localCols - 1; nr--; }
-              navigateTo(nr, nc);
+              editNext(nr, nc);
             } else if (e.key === 'Escape') {
               e.preventDefault();
               discardOnBlurRef.current = true;
@@ -1253,7 +1383,7 @@ export function VirtualGrid({ rows, columns, freezeRows, freezeColumns, configCo
             requestAnimationFrame(() => {
               const el = cellRefsMap.current.get(cellId);
               if (el && document.activeElement !== el) {
-                el.textContent = getDisplayValue(cellId, store, decimalsFor(cellId));
+                el.textContent = displayText(cellId);
                 el.scrollLeft = 0;
               }
             });
@@ -1285,140 +1415,130 @@ export function VirtualGrid({ rows, columns, freezeRows, freezeColumns, configCo
         className={`vg-toolbar${hasSelection ? '' : ' vg-toolbar--hidden'}`}
         onClick={(e) => e.stopPropagation()}
       >
-        <Button iconOnly aria-label="Bold" leadingIcon={<Bold size={14} />}      variant={isAllBold      ? 'Primary' : 'Gray'} size="XSmall" onClick={() => applyFmt({ bold:      !isAllBold      })} />
-        <Button iconOnly aria-label="Italic" leadingIcon={<Italic size={14} />}    variant={isAllItalic    ? 'Primary' : 'Gray'} size="XSmall" onClick={() => applyFmt({ italic:    !isAllItalic    })} />
-        <Button iconOnly aria-label="Underline" leadingIcon={<Underline size={14} />} variant={isAllUnderline ? 'Primary' : 'Gray'} size="XSmall" onClick={() => applyFmt({ underline: !isAllUnderline })} />
+        <ToolButton label="Bold"      icon={<Bold      size={14} />} isActive={isAllBold}      onClick={() => applyFmt({ bold:      !isAllBold      })} />
+        <ToolButton label="Italic"    icon={<Italic    size={14} />} isActive={isAllItalic}    onClick={() => applyFmt({ italic:    !isAllItalic    })} />
+        <ToolButton label="Underline" icon={<Underline size={14} />} isActive={isAllUnderline} onClick={() => applyFmt({ underline: !isAllUnderline })} />
 
         <span className="vg-divider" />
 
-        <input
-          ref={attachWheelStep}
-          className="vg-font-size-input"
-          type="number"
-          min={8}
-          max={72}
-          value={currentFontSize}
-          onKeyDown={(e: React.KeyboardEvent<HTMLInputElement>) => {
-            if (e.key === '-') e.preventDefault();
-          }}
-          onChange={(e: React.ChangeEvent<HTMLInputElement>) => {
-            const size = Math.abs(parseInt(e.target.value, 10));
-            if (!isNaN(size) && size >= 8 && size <= 72) applyFmt({ fontSize: size });
-          }}
-        />
+        <Tooltip bodyText="Font size" placement="Bottom">
+          <input
+            ref={attachWheelStep}
+            className="vg-font-size-input"
+            type="number"
+            min={MIN_FONT_SIZE}
+            max={MAX_FONT_SIZE}
+            value={fontSizeDraft ?? currentFontSize}
+            onKeyDown={(e: React.KeyboardEvent<HTMLInputElement>) => {
+              if (e.key === '-') e.preventDefault();
+              if (e.key === 'Enter') e.currentTarget.blur();
+              if (e.key === 'Escape') { setFontSizeDraft(null); e.currentTarget.blur(); }
+            }}
+            onChange={(e: React.ChangeEvent<HTMLInputElement>) => {
+              const raw = e.target.value;
+              setFontSizeDraft(raw);
+              const size = Math.abs(parseInt(raw, 10));
+              if (!isNaN(size) && size >= MIN_FONT_SIZE && size <= MAX_FONT_SIZE) {
+                applyFmt({ fontSize: size });
+                setFontSizeDraft(null);   // back in range — follow the selection again
+              }
+            }}
+            onBlur={() => {
+              // Empty or out of range on the way out: clamp what was typed, or
+              // fall back to the size the selection already has.
+              const typed = Math.abs(parseInt(fontSizeDraft ?? '', 10));
+              if (!isNaN(typed)) {
+                applyFmt({ fontSize: Math.min(MAX_FONT_SIZE, Math.max(MIN_FONT_SIZE, typed)) });
+              }
+              setFontSizeDraft(null);
+            }}
+          />
+        </Tooltip>
 
         <span className="vg-divider" />
 
-        <Button iconOnly aria-label="Align left" leadingIcon={<AlignLeft   size={14} />} variant={currentAlign === 'left'   ? 'Primary' : 'Gray'} size="XSmall" onClick={() => applyFmt({ textAlign: 'left'   })} />
-        <Button iconOnly aria-label="Align center" leadingIcon={<AlignCenter size={14} />} variant={currentAlign === 'center' ? 'Primary' : 'Gray'} size="XSmall" onClick={() => applyFmt({ textAlign: 'center' })} />
-        <Button iconOnly aria-label="Align right" leadingIcon={<AlignRight  size={14} />} variant={currentAlign === 'right'  ? 'Primary' : 'Gray'} size="XSmall" onClick={() => applyFmt({ textAlign: 'right'  })} />
+        <ToolButton label="Align left"   icon={<AlignLeft   size={14} />} isActive={currentAlign === 'left'}   onClick={() => applyFmt({ textAlign: 'left'   })} />
+        <ToolButton label="Align center" icon={<AlignCenter size={14} />} isActive={currentAlign === 'center'} onClick={() => applyFmt({ textAlign: 'center' })} />
+        <ToolButton label="Align right"  icon={<AlignRight  size={14} />} isActive={currentAlign === 'right'}  onClick={() => applyFmt({ textAlign: 'right'  })} />
 
         <span className="vg-divider" />
 
         {/* Number format picker */}
-        <select
-          className="vg-numfmt-select"
-          value={currentNumberFormat}
-          onChange={(e) => applyFmt({ numberFormat: e.target.value as NumberFormat })}
-        >
-          <option value="general">General</option>
-          <option value="number">1,234.56</option>
-          <option value="integer">1,234</option>
-          <option value="percent">%</option>
-          <option value="currency">$</option>
-        </select>
+        <Tooltip bodyText="Number format" placement="Bottom">
+          <select
+            className="vg-numfmt-select"
+            value={currentNumberFormat}
+            onChange={(e) => applyFmt({ numberFormat: e.target.value as NumberFormat })}
+          >
+            <option value="general">General</option>
+            <option value="number">1,234.56</option>
+            <option value="integer">1,234</option>
+            <option value="percent">%</option>
+            <option value="currency">$</option>
+          </select>
+        </Tooltip>
 
         {/* Decimal places for the selection — blank inherits the widget default */}
-        <span className="vg-numfmt-decimals" title="Decimal places (blank = widget default)">
-          <Hash size={11} />
-          <input
-            ref={attachWheelStep}
-            className="vg-font-size-input vg-font-size-input--narrow"
-            type="number"
-            min={0}
-            max={10}
-            placeholder={dataPrecision === null ? '—' : String(dataPrecision)}
-            value={currentDecimals === null ? '' : currentDecimals}
-            onKeyDown={(e: React.KeyboardEvent<HTMLInputElement>) => {
-              if (e.key === '-') e.preventDefault();
-            }}
-            onChange={(e: React.ChangeEvent<HTMLInputElement>) => {
-              const raw = e.target.value;
-              if (raw === '') { applyFmt({ decimals: null }); return; }
-              const d = Math.abs(parseInt(raw, 10));
-              if (!isNaN(d) && d <= 10) applyFmt({ decimals: d });
-            }}
-          />
-        </span>
+        <Tooltip heading="Decimal places" bodyText="Blank uses the widget default" placement="Bottom">
+          <span className="vg-numfmt-decimals">
+            <Hash size={11} />
+            <input
+              ref={attachWheelStep}
+              className="vg-font-size-input vg-font-size-input--narrow"
+              type="number"
+              min={0}
+              max={10}
+              placeholder={inheritedDecimals === null ? '—' : String(inheritedDecimals)}
+              value={currentDecimals === null ? '' : currentDecimals}
+              onKeyDown={(e: React.KeyboardEvent<HTMLInputElement>) => {
+                if (e.key === '-') e.preventDefault();
+              }}
+              onChange={(e: React.ChangeEvent<HTMLInputElement>) => {
+                const raw = e.target.value;
+                if (raw === '') { applyFmt({ decimals: null }); return; }
+                const d = Math.abs(parseInt(raw, 10));
+                if (!isNaN(d) && d <= 10) applyFmt({ decimals: d });
+              }}
+            />
+          </span>
+        </Tooltip>
 
         <span className="vg-divider" />
 
         {/* Clear the selected cells' contents */}
-        <Button
-          iconOnly
-          aria-label="Clear cell contents"
-          leadingIcon={<XSquare size={14} />}
-          variant="Gray"
-          size="XSmall"
+        <ToolButton
+          label="Clear contents"
+          icon={<XSquare size={14} />}
           onClick={() => clearContents(selectedArr)}
         />
 
         <span className="vg-divider" />
 
-        {/* Text color */}
-        <Popover
-          trigger={
-            <div className="vg-color-trigger" role="button" tabIndex={0} title="Text color" onKeyDown={keyActivate}>
-              <Type size={13} />
-              <span className="vg-color-trigger__bar" style={{ backgroundColor: currentTextColor || '#1a1a1a' }} />
-            </div>
-          }
-          placement="Bottom Start"
-        >
-          <PopoverHeader title="Text Color" showClose />
-          <PopoverBody>
-            <div className="vg-color-panel" onClick={(e) => e.stopPropagation()}>
-              <ColorInput
-                value={currentTextColor || '#1a1a1a'}
-                onChange={(color: string) => applyFmt({ textColor: color })}
-              />
-            </div>
-          </PopoverBody>
-        </Popover>
+        <ColorTool
+          label="Text color"
+          icon={<Type size={13} />}
+          value={currentTextColor}
+          fallback="#1A1A1A"
+          onChange={(color) => applyFmt({ textColor: color })}
+        />
 
-        {/* Fill color */}
-        <Popover
-          trigger={
-            <div className="vg-color-trigger" role="button" tabIndex={0} title="Fill color" onKeyDown={keyActivate}>
-              <Droplet size={13} />
-              <span
-                className="vg-color-trigger__bar"
-                style={{
-                  backgroundColor: currentCellColor || 'transparent',
-                  border: currentCellColor ? 'none' : '1px solid var(--fds-border-subtle, #ddd)',
-                }}
-              />
-            </div>
-          }
-          placement="Bottom Start"
-        >
-          <PopoverHeader title="Fill Color" showClose />
-          <PopoverBody>
-            <div className="vg-color-panel" onClick={(e) => e.stopPropagation()}>
-              <ColorInput
-                value={currentCellColor || '#ffffff'}
-                onChange={(color: string) => applyFmt({ cellColor: color })}
-              />
-            </div>
-          </PopoverBody>
-        </Popover>
+        <ColorTool
+          label="Fill color"
+          icon={<Droplet size={13} />}
+          value={currentCellColor}
+          fallback="#FFFFFF"
+          emptyBar
+          onChange={(color) => applyFmt({ cellColor: color })}
+        />
 
         <span className="vg-divider" />
 
         {/* Cell hyperlink */}
         <Popover
+          isOpen={linkOpen}
+          onOpenChange={(open: boolean) => (open ? setLinkOpen(true) : closeLinkPanel())}
           trigger={
-            <Button iconOnly aria-label="Cell link" leadingIcon={<LinkIcon size={14} />} variant={currentLink ? 'Primary' : 'Gray'} size="XSmall" />
+            <ToolButton label="Cell link" icon={<LinkIcon size={14} />} isActive={!!currentLink} />
           }
           placement="Bottom Start"
         >
@@ -1429,11 +1549,29 @@ export function VirtualGrid({ rows, columns, freezeRows, freezeColumns, configCo
                 label="URL"
                 placeholder="https://…"
                 value={linkDraft}
-                onChange={({ value }: { name: string; value: string }) => setLinkDraft(value)}
+                errorText={linkError || undefined}
+                validationState={linkError ? 'error' : undefined}
+                onChange={({ value }: { name: string; value: string }) => {
+                  setLinkDraft(value);
+                  setLinkError('');
+                }}
+                onKeyDown={(e: React.KeyboardEvent<HTMLInputElement>) => {
+                  if (e.key === 'Enter') { e.preventDefault(); applyLink(); }
+                  if (e.key === 'Escape') { e.preventDefault(); closeLinkPanel(); }
+                }}
               />
+              {currentLink && (
+                <Button
+                  variant="Secondary"
+                  size="XSmall"
+                  isFullWidth
+                  label="Remove link"
+                  onClick={() => { setLinkDraft(''); applyFmt({ link: '' }); setLinkOpen(false); }}
+                />
+              )}
               <div className="vg-link-panel__row">
-                <Button variant="Primary" size="XSmall" label="Apply" onClick={() => applyFmt({ link: linkDraft.trim() })} />
-                <Button variant="Secondary" size="XSmall" label="Remove" onClick={() => { setLinkDraft(''); applyFmt({ link: '' }); }} />
+                <Button variant="Secondary" size="XSmall" label="Cancel" onClick={closeLinkPanel} />
+                <Button variant="Primary" size="XSmall" label="Apply" onClick={applyLink} />
               </div>
               <p className="vg-link-panel__hint">Opens on click when the table is locked, or on Ctrl/Cmd-click while editing.</p>
             </div>
@@ -1445,7 +1583,7 @@ export function VirtualGrid({ rows, columns, freezeRows, freezeColumns, configCo
         {/* Cell borders */}
         <Popover
           trigger={
-            <Button iconOnly aria-label="Cell borders" leadingIcon={<Grid size={14} />} variant="Gray" size="XSmall" />
+            <ToolButton label="Borders" icon={<Grid size={14} />} />
           }
           placement="Bottom End"
         >
@@ -1454,43 +1592,71 @@ export function VirtualGrid({ rows, columns, freezeRows, freezeColumns, configCo
             <div className="vg-border-panel" onClick={(e) => e.stopPropagation()}>
 
               <div className="vg-border-diagram">
-                <div className="vg-border-diagram__top"    data-active={String(isSideActive('top'))}    title="Top border"    onClick={() => toggleSide('top')}    />
-                <div className="vg-border-diagram__bottom" data-active={String(isSideActive('bottom'))} title="Bottom border" onClick={() => toggleSide('bottom')} />
-                <div className="vg-border-diagram__left"   data-active={String(isSideActive('left'))}   title="Left border"   onClick={() => toggleSide('left')}   />
-                <div className="vg-border-diagram__right"  data-active={String(isSideActive('right'))}  title="Right border"  onClick={() => toggleSide('right')}  />
+                {(['top', 'bottom', 'left', 'right'] as const).map((side) => (
+                  <Tooltip
+                    key={side}
+                    bodyText={`${side[0].toUpperCase()}${side.slice(1)} border`}
+                    placement="Top"
+                    className={`vg-border-diagram__side vg-border-diagram__side--${side}`}
+                  >
+                    <div
+                      className="vg-border-diagram__bar"
+                      role="button"
+                      tabIndex={0}
+                      aria-pressed={isSideActive(side)}
+                      data-active={String(isSideActive(side))}
+                      onClick={() => toggleSide(side)}
+                      onKeyDown={(e) => {
+                        if (e.key !== 'Enter' && e.key !== ' ') return;
+                        e.preventDefault();
+                        toggleSide(side);
+                      }}
+                    />
+                  </Tooltip>
+                ))}
                 <div className="vg-border-diagram__cell" />
               </div>
 
               <div className="vg-border-panel__row">
-                <Button variant="Secondary" size="XSmall" label="All"  onClick={() => applyAllBorders(true)}  />
-                <Button variant="Secondary" size="XSmall" label="None" onClick={() => applyAllBorders(false)} />
+                <Tooltip bodyText="All borders" placement="Top">
+                  <Button variant="Secondary" size="XSmall" label="All" onClick={() => applyAllBorders(true)} />
+                </Tooltip>
+                <Tooltip bodyText="No borders" placement="Top">
+                  <Button variant="Secondary" size="XSmall" label="None" onClick={() => applyAllBorders(false)} />
+                </Tooltip>
               </div>
 
               <p className="vg-border-panel__label">Style</p>
               <div className="vg-border-panel__row">
                 {(['solid', 'dashed', 'dotted'] as const).map((s) => (
-                  <div
-                    key={s}
-                    className={`vg-border-style-btn${borderConfig.style === s ? ' vg-border-style-btn--active' : ''}`}
-                    onClick={() => setBorderConfig((c) => ({ ...c, style: s }))}
-                    title={s}
-                  >
-                    <div className="vg-border-style-btn__line" style={{ borderTopStyle: s }} />
-                  </div>
+                  <Tooltip key={s} bodyText={`${s[0].toUpperCase()}${s.slice(1)}`} placement="Top">
+                    <div
+                      className={`vg-border-style-btn${borderConfig.style === s ? ' vg-border-style-btn--active' : ''}`}
+                      role="button"
+                      tabIndex={0}
+                      aria-label={s}
+                      onClick={() => setBorderConfig((c) => ({ ...c, style: s }))}
+                    >
+                      <div className="vg-border-style-btn__line" style={{ borderTopStyle: s }} />
+                    </div>
+                  </Tooltip>
                 ))}
               </div>
 
               <p className="vg-border-panel__label">Width</p>
               <div className="vg-border-panel__row">
                 {([1, 2, 3] as const).map((w) => (
-                  <div
-                    key={w}
-                    className={`vg-border-style-btn${borderConfig.width === w ? ' vg-border-style-btn--active' : ''}`}
-                    onClick={() => setBorderConfig((c) => ({ ...c, width: w }))}
-                    title={`${w}px`}
-                  >
-                    <div className="vg-border-style-btn__line" style={{ borderTopWidth: w }} />
-                  </div>
+                  <Tooltip key={w} bodyText={`${w} px`} placement="Top">
+                    <div
+                      className={`vg-border-style-btn${borderConfig.width === w ? ' vg-border-style-btn--active' : ''}`}
+                      role="button"
+                      tabIndex={0}
+                      aria-label={`${w} px`}
+                      onClick={() => setBorderConfig((c) => ({ ...c, width: w }))}
+                    >
+                      <div className="vg-border-style-btn__line" style={{ borderTopWidth: w }} />
+                    </div>
+                  </Tooltip>
                 ))}
               </div>
 

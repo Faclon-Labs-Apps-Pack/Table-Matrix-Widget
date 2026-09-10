@@ -124,6 +124,39 @@ function IconAction({ icon, label, onClick, isDisabled, size = 'Small' }: {
   );
 }
 
+// Unit + precision, the two display rules a binding can hand to the cells it
+// fills. Both are optional: left empty, the value is shown exactly as it
+// resolved, with no suffix. Precision is a plain text field rather than a
+// counter so that "empty" stays a first-class value — a counter would have to
+// pick a number to show, and there is no sensible default to pick.
+function DataFormatFields({ unit, precision, onChange }: {
+  unit: string;
+  precision: number | null;
+  onChange: (patch: { unit?: string; precision?: number | null }) => void;
+}) {
+  return (
+    <>
+      <TextInput
+        label="Unit"
+        placeholder="e.g. kWh"
+        value={unit}
+        onChange={({ value }: { name: string; value: string }) => onChange({ unit: value })}
+      />
+      <TextInput
+        label="Data precision"
+        placeholder="e.g. 2"
+        value={precision === null ? '' : String(precision)}
+        onChange={({ value }: { name: string; value: string }) => {
+          const text = value.trim();
+          if (text === '') { onChange({ precision: null }); return; }
+          const digits = parseInt(text.replace(/[^0-9]/g, ''), 10);
+          if (!isNaN(digits)) onChange({ precision: Math.min(10, digits) });
+        }}
+      />
+    </>
+  );
+}
+
 // Italic one-liner naming the action that fills an empty section.
 function EmptyHint({ children }: { children: React.ReactNode }) {
   return <p className="wt-config__empty-hint BodySmallRegular">{children}</p>;
@@ -187,11 +220,81 @@ const CONDITION_LABELS: Record<ConditionalRuleCondition, string> = {
 };
 
 // Which nested editor the second panel is showing.
+//
+// A new entry is edited as a DRAFT before it exists in the list: `+` opens the
+// editor on the draft, and only the Add button commits it. That keeps a blank
+// tile (and a blank binding in the emitted envelope) from appearing in the
+// accordion while the user is still filling the form. DRAFT_INDEX / DRAFT_ID
+// are how a pane says "this one isn't in the list yet".
 type DetailPane =
   | { kind: 'binding'; index: number }
   | { kind: 'series';  index: number }
   | { kind: 'rule';    id: string }
   | { kind: 'filter';  id: string | null };
+
+const DRAFT_INDEX = -1;
+const DRAFT_ID = '';
+
+const isDraft = (pane: DetailPane | null): boolean =>
+  !!pane && (
+    ((pane.kind === 'binding' || pane.kind === 'series') && pane.index === DRAFT_INDEX) ||
+    (pane.kind === 'rule' && pane.id === DRAFT_ID) ||
+    (pane.kind === 'filter' && pane.id === null)
+  );
+
+function blankSeries(): SeriesBinding {
+  return { id: `series_${Date.now()}`, baseCellId: '', topic: '', direction: 'vertical', limit: 0 };
+}
+
+// Default colours for new entries, walked in order. Two rules (or two filters)
+// in the same colour are indistinguishable on the canvas, and picking the same
+// default every time guarantees that collision on the second entry — so a new
+// entry opens on the first colour nobody is using yet. It is only a default:
+// the picker is right there, duplicates included.
+const RULE_FILLS = [
+  '#FDE8E8', '#FEF3C7', '#E8F5E9', '#E3F2FD',
+  '#F3E8FD', '#FFF1E6', '#E0F7FA', '#FCE7F3',
+];
+
+const FILTER_COLORS = [
+  '#0073EA', '#00A854', '#E4553D', '#8B5CF6',
+  '#F59E0B', '#0891B2', '#DB2777', '#65A30D',
+];
+
+/** First palette colour not already taken; once they all are, keep cycling. */
+function nextColor(palette: string[], used: Array<string | undefined>): string {
+  const taken = new Set(used.filter(Boolean).map((c) => c!.toUpperCase()));
+  return palette.find((c) => !taken.has(c.toUpperCase())) ?? palette[taken.size % palette.length];
+}
+
+function blankRule(cellColor: string): ConditionalRule {
+  return {
+    id: `rule_${Date.now()}`,
+    enabled: true,
+    range: null,
+    condition: 'greaterThan',
+    value1: '',
+    value2: '',
+    format: { cellColor },
+  };
+}
+
+// Why a rule cannot be saved yet, '' when it can. Min/Max the wrong way round
+// is the quiet failure this exists for: the rule saves, matches nothing, and
+// looks like the formatting is broken.
+function ruleValueError(rule: ConditionalRule | undefined): string {
+  if (!rule) return '';
+  if (NEEDS_VALUE1.includes(rule.condition) && !String(rule.value1).trim()) {
+    return 'A value is required for this condition';
+  }
+  if (rule.condition !== 'between') return '';
+  if (!String(rule.value2).trim()) return 'Both Min and Max are required for "between"';
+  const min = Number(String(rule.value1).trim());
+  const max = Number(String(rule.value2).trim());
+  if (!Number.isFinite(min) || !Number.isFinite(max)) return 'Min and Max must be numbers';
+  if (min >= max) return 'Min must be less than Max';
+  return '';
+}
 
 const TITLE_WEIGHT_LABELS: Record<TitleFontWeight, string> = {
   regular: 'Regular',
@@ -204,6 +307,27 @@ const TITLE_WEIGHT_LABELS: Record<TitleFontWeight, string> = {
 // whenever the list scrolled, and capped how much of a long form could fit.
 const PANEL_TOP = 16;     // px from the top of the viewport
 const PANEL_GUTTER = 20;  // px between the config panel's right edge and the panel
+const PANEL_WIDTH = 320;  // must match .wt-detail-modal .fds-modal width
+const PANEL_MARGIN = 8;   // smallest gap the panel keeps from a viewport edge
+
+// Where the second panel opens, in viewport px.
+//
+// The Configurator Overlay Pattern puts it to the RIGHT of the config panel,
+// which the dev harness (panel on the left, wide window) always has room for.
+// A host that docks the config panel near the right edge — or a narrow window —
+// puts that x past the viewport, and the SDK Modal clamps rather than clips, so
+// the panel slides back on top of the very panel it is meant to sit beside.
+// Flip it to the left side when the right doesn't fit, and only clamp when
+// neither side does.
+function detailPosition(rect: DOMRect): { x: number; y: number } {
+  const toRight = rect.right + PANEL_GUTTER;
+  const toLeft = rect.left - PANEL_GUTTER - PANEL_WIDTH;
+  const x =
+    toRight + PANEL_WIDTH + PANEL_MARGIN <= window.innerWidth ? toRight
+    : toLeft >= PANEL_MARGIN ? toLeft
+    : Math.max(PANEL_MARGIN, window.innerWidth - PANEL_WIDTH - PANEL_MARGIN);
+  return { x, y: PANEL_TOP };
+}
 
 const NEEDS_VALUE1: ConditionalRuleCondition[] = [
   'greaterThan', 'lessThan', 'greaterThanOrEqual', 'lessThanOrEqual',
@@ -215,7 +339,9 @@ export function TableWidgetConfiguration(props: TableWidgetConfigurationProps) {
   const [activeTab, setActiveTab] = useState<'data' | 'style' | 'filter'>('data');
   // One section open at a time, by construction rather than by convention.
   // Keys are tab-qualified because 'table' exists in two tabs.
-  const [openSection, setOpenSection] = useState<string | null>('data.table');
+  // The table's own settings no longer live behind an accordion, so the first
+  // one that does — Cell Bindings — is what opens with the panel.
+  const [openSection, setOpenSection] = useState<string | null>('data.bindings');
   const toggleSection = (key: string) =>
     setOpenSection((current) => (current === key ? null : key));
   const configRef = useRef<HTMLDivElement>(null);
@@ -257,7 +383,6 @@ export function TableWidgetConfiguration(props: TableWidgetConfigurationProps) {
   const [tableBorderStyle, setTableBorderStyle] = useState<TableBorderStyle>(ui.style.tableBorderStyle);
   const [showExportButton, setShowExportButton] = useState<boolean>(ui.style.showExportButton);
   const [showSearch, setShowSearch] = useState<boolean>(ui.style.showSearch);
-  const [dataPrecision, setDataPrecision] = useState<number | null>(ui.dataPrecision);
   const [timeDisplay, setTimeDisplay] = useState<TimeDisplayMode>(ui.timeDisplay);
   const [cellBindings, setCellBindings] = useState<CellBinding[]>(ui.cellBindings);
   const [seriesBindings, setSeriesBindings] = useState<SeriesBinding[]>(ui.seriesBindings);
@@ -284,6 +409,16 @@ export function TableWidgetConfiguration(props: TableWidgetConfigurationProps) {
   const [detailX, setDetailX] = useState(0);
   const [detailY, setDetailY] = useState(0);
 
+  // The entry being built by an "add" pane, before Add commits it to the list.
+  const [draftBinding, setDraftBinding] = useState<CellBinding>({ cellId: '', topic: '' });
+  const [draftSeries, setDraftSeries] = useState<SeriesBinding>(blankSeries);
+  const [draftRule, setDraftRule] = useState<ConditionalRule>(() => blankRule(RULE_FILLS[0]));
+  // Required-field messages for the pane's cell address and topic.
+  const [cellRefError, setCellRefError] = useState('');
+  const [topicError, setTopicError] = useState('');
+  // Anything else the pane refuses to commit (a rule with no threshold).
+  const [detailError, setDetailError] = useState('');
+
   // Filter entries are the one draft-then-commit editor (name is validated for
   // emptiness and duplicates), so their fields are staged here.
   const [filterNameInput, setFilterNameInput] = useState('');
@@ -304,7 +439,6 @@ export function TableWidgetConfiguration(props: TableWidgetConfigurationProps) {
       setTableBorderStyle(u.style.tableBorderStyle);
       setShowExportButton(u.style.showExportButton);
       setShowSearch(u.style.showSearch);
-      setDataPrecision(u.dataPrecision);
       setTimeDisplay(u.timeDisplay);
       setCellBindings(u.cellBindings);
       setSeriesBindings(u.seriesBindings);
@@ -362,7 +496,6 @@ export function TableWidgetConfiguration(props: TableWidgetConfigurationProps) {
     tableBorderStyle: TableBorderStyle;
     showExportButton: boolean;
     showSearch: boolean;
-    dataPrecision: number | null;
     timeDisplay: TimeDisplayMode;
   }>) {
     const resolved = {
@@ -379,9 +512,6 @@ export function TableWidgetConfiguration(props: TableWidgetConfigurationProps) {
       tableBorderStyle:  overrides?.tableBorderStyle  ?? tableBorderStyle,
       showExportButton:  overrides?.showExportButton  ?? showExportButton,
       showSearch:        overrides?.showSearch        ?? showSearch,
-      // `dataPrecision: null` means "don't round" — a ?? fallback would turn
-      // that choice back into the default on the next emit.
-      dataPrecision:     overrides && 'dataPrecision' in overrides ? overrides.dataPrecision! : dataPrecision,
       timeDisplay:       overrides?.timeDisplay       ?? timeDisplay,
     };
 
@@ -413,7 +543,6 @@ export function TableWidgetConfiguration(props: TableWidgetConfigurationProps) {
       cellBindings:     resolved.cellBindings,
       seriesBindings:   resolved.seriesBindings,
       rowFilter:        resolved.rowFilter,
-      dataPrecision:    resolved.dataPrecision,
       timeDisplay:      resolved.timeDisplay,
       style: {
         card:             resolved.cardStyle,
@@ -475,6 +604,9 @@ export function TableWidgetConfiguration(props: TableWidgetConfigurationProps) {
   }
 
   function updateRuleDebounced(ruleId: string, patch: Partial<ConditionalRule>) {
+    // A draft rule isn't in the list and isn't emitted, so there is nothing to
+    // debounce — write it straight through.
+    if (ruleId === DRAFT_ID) { setDraftRule((d) => ({ ...d, ...patch })); return; }
     setConditionalRules((rules) => rules.map((r) => (r.id === ruleId ? { ...r, ...patch } : r)));
     if (ruleDebounceRefs.current[ruleId]) clearTimeout(ruleDebounceRefs.current[ruleId]);
     ruleDebounceRefs.current[ruleId] = setTimeout(() => {
@@ -506,23 +638,8 @@ export function TableWidgetConfiguration(props: TableWidgetConfigurationProps) {
 
   // ── Conditional rule helpers ───────────────────────────────────────────────
 
-  function addRule(): string {
-    const rule: ConditionalRule = {
-      id: `rule_${Date.now()}`,
-      enabled: true,
-      range: null,
-      condition: 'greaterThan',
-      value1: '',
-      value2: '',
-      format: { cellColor: '#fde8e8' },
-    };
-    const next = [...conditionalRules, rule];
-    setConditionalRules(next);
-    emit({ conditionalRules: next });
-    return rule.id;
-  }
-
   function updateRule(id: string, patch: Partial<ConditionalRule>) {
+    if (id === DRAFT_ID) { setDraftRule((d) => ({ ...d, ...patch })); return; }
     const next = conditionalRules.map((r) => r.id === id ? { ...r, ...patch } : r);
     setConditionalRules(next);
     emit({ conditionalRules: next });
@@ -560,13 +677,8 @@ export function TableWidgetConfiguration(props: TableWidgetConfigurationProps) {
     return next;
   }
 
-  function addBinding() {
-    const next = [...cellBindings, { cellId: '', topic: '' }];
-    setCellBindings(next);
-    emit({ cellBindings: next });
-  }
-
   function updateBinding(idx: number, patch: Partial<CellBinding>) {
+    if (idx === DRAFT_INDEX) { setDraftBinding((d) => ({ ...d, ...patch })); return; }
     const next = cellBindings.map((b, i) => i === idx ? { ...b, ...patch } : b);
     setCellBindings(next);
     emit({ cellBindings: next });
@@ -581,16 +693,8 @@ export function TableWidgetConfiguration(props: TableWidgetConfigurationProps) {
 
   // ── Series population helpers ──────────────────────────────────────────────
 
-  function addSeries() {
-    const next: SeriesBinding[] = [
-      ...seriesBindings,
-      { id: `series_${Date.now()}`, baseCellId: '', topic: '', direction: 'vertical', limit: 0 },
-    ];
-    setSeriesBindings(next);
-    emit({ seriesBindings: next });
-  }
-
   function updateSeries(idx: number, patch: Partial<SeriesBinding>) {
+    if (idx === DRAFT_INDEX) { setDraftSeries((d) => ({ ...d, ...patch })); return; }
     const next = seriesBindings.map((s, i) => i === idx ? { ...s, ...patch } : s);
     setSeriesBindings(next);
     emit({ seriesBindings: next });
@@ -646,7 +750,7 @@ export function TableWidgetConfiguration(props: TableWidgetConfigurationProps) {
   // the second panel when its subject disappears rather than leaving an empty
   // form pointing at nothing.
   useEffect(() => {
-    if (!detail) return;
+    if (!detail || isDraft(detail)) return;   // a draft is not in the list yet
     const gone =
       (detail.kind === 'binding' && !cellBindings[detail.index]) ||
       (detail.kind === 'series'  && !seriesBindings[detail.index]) ||
@@ -656,18 +760,21 @@ export function TableWidgetConfiguration(props: TableWidgetConfigurationProps) {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [detail, cellBindings, seriesBindings, conditionalRules, rowFilter.filters]);
 
-  // Anchor the second panel to the right edge of this one, top-aligned.
+  // Anchor the second panel beside this one, top-aligned.
   function openDetail(pane: DetailPane, e?: React.MouseEvent) {
     e?.stopPropagation();
+    setCellRefError('');
+    setTopicError('');
+    setDetailError('');
     if (configRef.current) {
-      const rect = configRef.current.getBoundingClientRect();
-      setDetailX(rect.right + PANEL_GUTTER);
-      setDetailY(PANEL_TOP);
+      const { x, y } = detailPosition(configRef.current.getBoundingClientRect());
+      setDetailX(x);
+      setDetailY(y);
     }
     if (pane.kind === 'filter') {
       const filter = pane.id ? rowFilter.filters.find((f) => f.id === pane.id) : undefined;
       setFilterNameInput(filter?.name ?? '');
-      setFilterColorInput(filter?.color ?? '#0073ea');
+      setFilterColorInput(filter?.color ?? nextColor(FILTER_COLORS, rowFilter.filters.map((f) => f.color)));
       setFilterIconInput(filter?.icon ?? DEFAULT_ROW_FILTER_ICON);
       setFilterNameError('');
     }
@@ -676,27 +783,146 @@ export function TableWidgetConfiguration(props: TableWidgetConfigurationProps) {
 
   function closeDetail() {
     setDetail(null);
+    setCellRefError('');
+    setTopicError('');
+    setDetailError('');
     setFilterNameInput('');
     setFilterColorInput('#0073ea');
     setFilterIconInput(DEFAULT_ROW_FILTER_ICON);
     setFilterNameError('');
   }
 
-  // Add a binding / series / rule and open its editor in one step, so a new
-  // entry is never left as a blank row the user has to find and click.
-  function addBindingAndEdit() {
-    addBinding();
-    openDetail({ kind: 'binding', index: cellBindings.length });
+  // The position is viewport px captured at open time, so anything that moves
+  // the config panel afterwards leaves the second panel stranded — a window
+  // resize, or the host re-laying out its sidebar. The SDK Modal re-clamps only
+  // when positionX/Y change, so re-measure ourselves while the panel is open.
+  useEffect(() => {
+    if (!detail) return;
+    const reposition = () => {
+      if (!configRef.current) return;
+      const { x, y } = detailPosition(configRef.current.getBoundingClientRect());
+      setDetailX(x);
+      setDetailY(y);
+    };
+    window.addEventListener('resize', reposition);
+    const observer = new ResizeObserver(reposition);
+    if (configRef.current) observer.observe(configRef.current);
+    return () => {
+      window.removeEventListener('resize', reposition);
+      observer.disconnect();
+    };
+  }, [detail]);
+
+  // "+" opens the editor on a blank DRAFT. Nothing reaches the list — or the
+  // envelope — until the Add button commits it, so the accordion never shows a
+  // half-filled tile and the widget never resolves an empty binding.
+  // Adding from a collapsed section would drop the new tile out of sight, so
+  // "+" also opens the section it belongs to.
+  function addBindingAndEdit(e?: React.MouseEvent) {
+    setDraftBinding({ cellId: '', topic: '' });
+    setCellRefInputs((prev) => ({ ...prev, [DRAFT_INDEX]: '' }));
+    setOpenSection('data.bindings');
+    openDetail({ kind: 'binding', index: DRAFT_INDEX }, e);
   }
 
-  function addSeriesAndEdit() {
-    addSeries();
-    openDetail({ kind: 'series', index: seriesBindings.length });
+  function addSeriesAndEdit(e?: React.MouseEvent) {
+    setDraftSeries(blankSeries());
+    setSeriesRefInputs((prev) => ({ ...prev, [DRAFT_INDEX]: '' }));
+    setOpenSection('data.series');
+    openDetail({ kind: 'series', index: DRAFT_INDEX }, e);
   }
 
-  function addRuleAndEdit() {
-    const id = addRule();
-    openDetail({ kind: 'rule', id });
+  function addRuleAndEdit(e?: React.MouseEvent) {
+    setDraftRule(blankRule(nextColor(RULE_FILLS, conditionalRules.map((r) => r.format.cellColor))));
+    setRangeInputs((prev) => ({ ...prev, [DRAFT_ID]: '' }));
+    setOpenSection('style.conditional');
+    openDetail({ kind: 'rule', id: DRAFT_ID }, e);
+  }
+
+  // Commit the draft the pane is showing. Every required field is checked here
+  // rather than at the field, so Add can never produce an entry the widget
+  // cannot resolve — an address that isn't a cell, or a binding with no topic.
+  // A cell address the widget can actually act on: A1 form, and inside the grid
+  // the table is configured for. Returns the cellId, or null after putting the
+  // reason on the field. `live` is for keystroke-by-keystroke validation, where
+  // an empty field is "not finished" rather than an error.
+  function validCellId(ref: string, live = false): string | null {
+    const text = ref.trim();
+    if (text === '') {
+      setCellRefError(live ? '' : 'A cell address is required');
+      return null;
+    }
+    let cellId: string;
+    try {
+      cellId = refToCellId(text);
+    } catch {
+      setCellRefError('Use a cell address like A1');
+      return null;
+    }
+    const m = /^R(\d+)C(\d+)$/.exec(cellId)!;
+    if (parseInt(m[1], 10) >= rows || parseInt(m[2], 10) >= columns) {
+      setCellRefError(`Outside the table — last cell is ${cellIdToRef(`R${rows - 1}C${columns - 1}`)}`);
+      return null;
+    }
+    setCellRefError('');
+    return cellId;
+  }
+
+  // Shared by the Cell / Base cell fields of both panes, draft and existing
+  // alike: show why an address is rejected instead of silently ignoring it.
+  function handleCellRefInput(kind: 'binding' | 'series', index: number, value: string) {
+    const setInputs = kind === 'binding' ? setCellRefInputs : setSeriesRefInputs;
+    setInputs((prev) => ({ ...prev, [index]: value }));
+    const cellId = validCellId(value, true);
+    if (!cellId) return;
+    if (kind === 'binding') updateBinding(index, { cellId });
+    else updateSeries(index, { baseCellId: cellId });
+  }
+
+  function submitDetail() {
+    if (!detail) return;
+
+    if (detail.kind === 'binding') {
+      const cellId = validCellId(cellRefInputs[DRAFT_INDEX] ?? '');
+      if (!cellId) return;
+      if (!draftBinding.topic.trim()) { setTopicError('Select a UNS topic'); return; }
+      const next = [...cellBindings, { ...draftBinding, cellId }];
+      setCellBindings(next);
+      emit({ cellBindings: next });
+      closeDetail();
+      return;
+    }
+
+    if (detail.kind === 'series') {
+      const baseCellId = validCellId(seriesRefInputs[DRAFT_INDEX] ?? '');
+      if (!baseCellId) return;
+      if (!draftSeries.topic.trim()) { setTopicError('Select a UNS topic'); return; }
+      const next = [...seriesBindings, { ...draftSeries, baseCellId }];
+      setSeriesBindings(next);
+      emit({ seriesBindings: next });
+      closeDetail();
+      return;
+    }
+
+    if (detail.kind === 'rule') {
+      // The range may be left empty (= every cell), but a typed one has to
+      // parse, and a comparison needs something to compare against.
+      const raw = (rangeInputs[DRAFT_ID] ?? '').trim();
+      let range = null;
+      if (raw !== '') {
+        range = parseRangeString(raw);
+        if (!range) {
+          setRuleRangeErrors((prev) => ({ ...prev, [DRAFT_ID]: 'Invalid range — e.g. A1 or B2:D5' }));
+          return;
+        }
+      }
+      const valueError = ruleValueError(draftRule);
+      if (valueError) { setDetailError(valueError); return; }
+      const next = [...conditionalRules, { ...draftRule, range }];
+      setConditionalRules(next);
+      emit({ conditionalRules: next });
+      closeDetail();
+    }
   }
 
   function submitFilterDetail() {
@@ -720,9 +946,19 @@ export function TableWidgetConfiguration(props: TableWidgetConfigurationProps) {
   }
 
 
-  const editingBinding = detail?.kind === 'binding' ? cellBindings[detail.index] : undefined;
-  const editingSeries  = detail?.kind === 'series'  ? seriesBindings[detail.index] : undefined;
-  const editingRule    = detail?.kind === 'rule'    ? conditionalRules.find((r) => r.id === detail.id) : undefined;
+  const editingBinding = detail?.kind === 'binding'
+    ? (detail.index === DRAFT_INDEX ? draftBinding : cellBindings[detail.index])
+    : undefined;
+  const editingSeries = detail?.kind === 'series'
+    ? (detail.index === DRAFT_INDEX ? draftSeries : seriesBindings[detail.index])
+    : undefined;
+  const editingRule = detail?.kind === 'rule'
+    ? (detail.id === DRAFT_ID ? draftRule : conditionalRules.find((r) => r.id === detail.id))
+    : undefined;
+
+  // Recomputed every render from whatever the pane is editing (draft or saved),
+  // so the message and the disabled button can never disagree.
+  const ruleError = detail?.kind === 'rule' ? ruleValueError(editingRule) : '';
 
   const detailTitle =
     detail?.kind === 'binding' ? 'Cell Binding'
@@ -768,13 +1004,10 @@ export function TableWidgetConfiguration(props: TableWidgetConfigurationProps) {
         <div className="wt-config__body">
           <div className="wt-config__sections">
 
-            <ProductAccordionItem
-              title="Table"
-              isActive
-              isExpanded={openSection === 'data.table'}
-              onToggle={() => toggleSection('data.table')}
-            >
-              <div className="wt-section">
+            {/* Lead section — the table's own settings need no container of
+                their own: they are always relevant, so they sit above the
+                accordions rather than behind one more click. */}
+            <div className="wt-section wt-section--lead">
 
                 <TextInput
                   label="Title"
@@ -825,45 +1058,9 @@ export function TableWidgetConfiguration(props: TableWidgetConfigurationProps) {
                   onChange={(next) => { setLocked(next); emit({ locked: next }); }}
                 />
 
-              </div>
-            </ProductAccordionItem>
-
-            <ProductAccordionItem
-              title="Value Format"
-              isActive
-              isExpanded={openSection === 'data.values'}
-              onToggle={() => toggleSection('data.values')}
-            >
-              <div className="wt-section">
-
-                <NumberField
-                  label="Decimal places"
-                  value={dataPrecision ?? 0}
-                  min={0}
-                  max={10}
-                  step={1}
-                  isDisabled={dataPrecision === null}
-                  onChange={(value) => {
-                    const next = value ?? 0;
-                    setDataPrecision(next);
-                    emit({ dataPrecision: next });
-                  }}
-                />
-
-                <Field label="Rounding">
-                  <SwitchButtonGroup
-                    value={dataPrecision === null ? 'full' : 'fixed'}
-                    onChange={({ value }: { value: string | null }) => {
-                      const next = value === 'full' ? null : 2;
-                      setDataPrecision(next);
-                      emit({ dataPrecision: next });
-                    }}
-                  >
-                    <SwitchButtonBase type="Text" value="fixed" label="Fixed" />
-                    <SwitchButtonBase type="Text" value="full"  label="Full" />
-                  </SwitchButtonGroup>
-                </Field>
-
+                {/* Kept when Value Format was removed: precision moved onto the
+                    bindings, but this is a table-wide display choice the
+                    mini-engine reads when it cuts time buckets. */}
                 <Field label="Timestamps">
                   <SwitchButtonGroup
                     value={timeDisplay}
@@ -878,8 +1075,7 @@ export function TableWidgetConfiguration(props: TableWidgetConfigurationProps) {
                   </SwitchButtonGroup>
                 </Field>
 
-              </div>
-            </ProductAccordionItem>
+            </div>
 
             <ProductAccordionItem
               title="Cell Bindings"
@@ -891,7 +1087,7 @@ export function TableWidgetConfiguration(props: TableWidgetConfigurationProps) {
                   icon={<Plus size={16} />}
                   label="Add Cell Binding"
                   size="16"
-                  onClick={() => addBindingAndEdit()}
+                  onClick={(e: React.MouseEvent) => addBindingAndEdit(e)}
                 />
               }
             >
@@ -936,7 +1132,7 @@ export function TableWidgetConfiguration(props: TableWidgetConfigurationProps) {
                   icon={<Plus size={16} />}
                   label="Add Series Binding"
                   size="16"
-                  onClick={() => addSeriesAndEdit()}
+                  onClick={(e: React.MouseEvent) => addSeriesAndEdit(e)}
                 />
               }
             >
@@ -985,13 +1181,8 @@ export function TableWidgetConfiguration(props: TableWidgetConfigurationProps) {
         <div className="wt-config__body">
           <div className="wt-config__sections">
 
-            <ProductAccordionItem
-              title="Table"
-              isActive
-              isExpanded={openSection === 'style.table'}
-              onToggle={() => toggleSection('style.table')}
-            >
-              <div className="wt-section">
+            {/* Lead section — see the Data tab. */}
+            <div className="wt-section wt-section--lead">
 
                 <Field label="Grid lines">
                   <SwitchButtonGroup
@@ -1041,21 +1232,21 @@ export function TableWidgetConfiguration(props: TableWidgetConfigurationProps) {
                       onChange={(c: string) => updateCardStyle({ borderColor: c })}
                     />
 
-                    <Field label="Border width">
-                      <SwitchButtonGroup
-                        value={String(cardStyle.borderWidth)}
-                        onChange={({ value }: { value: string | null }) =>
-                          updateCardStyle({ borderWidth: Number(value ?? 1) })
-                        }
-                      >
-                        <SwitchButtonBase type="Text" value="1" label="1px" />
-                        <SwitchButtonBase type="Text" value="2" label="2px" />
-                        <SwitchButtonBase type="Text" value="3" label="3px" />
-                      </SwitchButtonGroup>
-                    </Field>
+                    <NumberField
+                      className="wt-counter--plain"
+                      label="Border width"
+                      value={cardStyle.borderWidth}
+                      min={0}
+                      max={16}
+                      step={1}
+                      onChange={(value) =>
+                        updateCardStyle({ borderWidth: value ?? 0 })
+                      }
+                    />
 
                     <div className="wt-config__row">
                       <NumberField
+                        className="wt-counter--plain"
                         label="Radius"
                         value={cardStyle.borderRadius}
                         min={0}
@@ -1066,6 +1257,7 @@ export function TableWidgetConfiguration(props: TableWidgetConfigurationProps) {
                         }
                       />
                       <NumberField
+                        className="wt-counter--plain"
                         label="Padding"
                         value={cardStyle.padding}
                         min={0}
@@ -1079,8 +1271,7 @@ export function TableWidgetConfiguration(props: TableWidgetConfigurationProps) {
                   </>
                 )}
 
-              </div>
-            </ProductAccordionItem>
+            </div>
 
             <ProductAccordionItem
               title="Title"
@@ -1097,6 +1288,7 @@ export function TableWidgetConfiguration(props: TableWidgetConfigurationProps) {
                 />
 
                 <NumberField
+                  className="wt-counter--plain"
                   label="Font size"
                   value={titleStyle.fontSize}
                   min={10}
@@ -1153,7 +1345,7 @@ export function TableWidgetConfiguration(props: TableWidgetConfigurationProps) {
                   icon={<Plus size={16} />}
                   label="Add Formatting Rule"
                   size="16"
-                  onClick={() => addRuleAndEdit()}
+                  onClick={(e: React.MouseEvent) => addRuleAndEdit(e)}
                 />
               }
             >
@@ -1225,13 +1417,8 @@ export function TableWidgetConfiguration(props: TableWidgetConfigurationProps) {
         <div className="wt-config__body">
           <div className="wt-config__sections">
 
-            <ProductAccordionItem
-              title="Row Filter"
-              isActive
-              isExpanded={openSection === 'filter.rowfilter'}
-              onToggle={() => toggleSection('filter.rowfilter')}
-            >
-              <div className="wt-section">
+            {/* Lead section — see the Data tab. */}
+            <div className="wt-section wt-section--lead">
 
                 <TextInput
                   label="Column range"
@@ -1272,8 +1459,7 @@ export function TableWidgetConfiguration(props: TableWidgetConfigurationProps) {
                   onChange={(next) => updateRowFilter({ enableColor: next })}
                 />
 
-              </div>
-            </ProductAccordionItem>
+            </div>
 
             <ProductAccordionItem
               title="Filters"
@@ -1285,7 +1471,10 @@ export function TableWidgetConfiguration(props: TableWidgetConfigurationProps) {
                   icon={<Plus size={16} />}
                   label="Add Filter"
                   size="16"
-                  onClick={(e: React.MouseEvent) => openDetail({ kind: 'filter', id: null }, e)}
+                  onClick={(e: React.MouseEvent) => {
+                    setOpenSection('filter.filters');
+                    openDetail({ kind: 'filter', id: null }, e);
+                  }}
                 />
               }
             >
@@ -1377,9 +1566,28 @@ export function TableWidgetConfiguration(props: TableWidgetConfigurationProps) {
                   />
                 }
               />
+            ) : isDraft(detail) ? (
+              // A draft is committed by this button and by nothing else, so it
+              // says what it will do rather than "Done".
+              <ModalFooter
+                primaryAction={
+                  <Button
+                    variant="Primary"
+                    size="Small"
+                    label={detail.kind === 'binding' ? 'Add Binding' : detail.kind === 'series' ? 'Add Series' : 'Add Rule'}
+                    isDisabled={!!ruleError}
+                    onClick={submitDetail}
+                  />
+                }
+              />
             ) : (
               <ModalFooter
-                primaryAction={<Button variant="Primary" size="Small" label="Done" onClick={closeDetail} />}
+                primaryAction={
+                  // A saved rule edits live, so the only way to stop an invalid
+                  // one from being left behind is to hold the panel open until
+                  // it is fixed (the header's ✕ is still there to abandon it).
+                  <Button variant="Primary" size="Small" label="Done" isDisabled={!!ruleError} onClick={closeDetail} />
+                }
               />
             )
           }
@@ -1387,19 +1595,19 @@ export function TableWidgetConfiguration(props: TableWidgetConfigurationProps) {
           <ModalBody>
             <div className="wt-detail__body">
 
+              {detailError && <p className="wt-detail__error BodySmallRegular">{detailError}</p>}
+
               {detail.kind === 'binding' && editingBinding && (
                 <>
                   <TextInput
                     label="Cell"
                     placeholder="e.g. A1"
                     value={cellRefInputs[detail.index] ?? (editingBinding.cellId ? cellIdToRef(editingBinding.cellId) : '')}
-                    onChange={({ value }: { name: string; value: string }) => {
-                      const index = detail.index;
-                      setCellRefInputs((prev) => ({ ...prev, [index]: value }));
-                      try {
-                        updateBinding(index, { cellId: refToCellId(value) });
-                      } catch { /* invalid ref — wait for more input */ }
-                    }}
+                    errorText={cellRefError || undefined}
+                    validationState={cellRefError ? 'error' : undefined}
+                    onChange={({ value }: { name: string; value: string }) =>
+                      handleCellRefInput('binding', detail.index, value)
+                    }
                   />
                   <UNSTreePicker
                     label="UNS Topic"
@@ -1410,7 +1618,13 @@ export function TableWidgetConfiguration(props: TableWidgetConfigurationProps) {
                     loadChildren={loadChildren}
                     searchNodes={searchNodes}
                     onOpen={loadWorkspaces}
-                    onChange={(value) => updateBinding(detail.index, { topic: value })}
+                    onChange={(value) => { setTopicError(''); updateBinding(detail.index, { topic: value }); }}
+                  />
+                  {topicError && <p className="wt-detail__error BodySmallRegular">{topicError}</p>}
+                  <DataFormatFields
+                    unit={editingBinding.unit ?? ''}
+                    precision={editingBinding.precision ?? null}
+                    onChange={(patch) => updateBinding(detail.index, patch)}
                   />
                 </>
               )}
@@ -1421,13 +1635,11 @@ export function TableWidgetConfiguration(props: TableWidgetConfigurationProps) {
                     label="Base cell"
                     placeholder="e.g. A1"
                     value={seriesRefInputs[detail.index] ?? (editingSeries.baseCellId ? cellIdToRef(editingSeries.baseCellId) : '')}
-                    onChange={({ value }: { name: string; value: string }) => {
-                      const index = detail.index;
-                      setSeriesRefInputs((prev) => ({ ...prev, [index]: value }));
-                      try {
-                        updateSeries(index, { baseCellId: refToCellId(value) });
-                      } catch { /* invalid ref — wait for more input */ }
-                    }}
+                    errorText={cellRefError || undefined}
+                    validationState={cellRefError ? 'error' : undefined}
+                    onChange={({ value }: { name: string; value: string }) =>
+                      handleCellRefInput('series', detail.index, value)
+                    }
                   />
                   <UNSTreePicker
                     label="Array topic"
@@ -1438,8 +1650,9 @@ export function TableWidgetConfiguration(props: TableWidgetConfigurationProps) {
                     loadChildren={loadChildren}
                     searchNodes={searchNodes}
                     onOpen={loadWorkspaces}
-                    onChange={(value) => updateSeries(detail.index, { topic: value })}
+                    onChange={(value) => { setTopicError(''); updateSeries(detail.index, { topic: value }); }}
                   />
+                  {topicError && <p className="wt-detail__error BodySmallRegular">{topicError}</p>}
                   <Field label="Direction">
                     <SwitchButtonGroup
                       value={editingSeries.direction}
@@ -1461,6 +1674,11 @@ export function TableWidgetConfiguration(props: TableWidgetConfigurationProps) {
                       updateSeries(detail.index, { limit: value ?? 0 })
                     }
                   />
+                  <DataFormatFields
+                    unit={editingSeries.unit ?? ''}
+                    precision={editingSeries.precision ?? null}
+                    onChange={(patch) => updateSeries(detail.index, patch)}
+                  />
                   <p className="wt-detail__note">{describeSeriesSpan(editingSeries, rows, columns)}</p>
                 </>
               )}
@@ -1471,18 +1689,18 @@ export function TableWidgetConfiguration(props: TableWidgetConfigurationProps) {
                     label="Rule enabled"
                     checked={editingRule.enabled}
                     onChange={(e: React.ChangeEvent<HTMLInputElement>) =>
-                      updateRule(editingRule.id, { enabled: e.target.checked })
+                      updateRule(detail.id, { enabled: e.target.checked })
                     }
                   />
 
                   <TextInput
                     label="Range"
                     placeholder="All cells"
-                    value={rangeInputs[editingRule.id] ?? rangeToString(editingRule.range)}
-                    errorText={ruleRangeErrors[editingRule.id] || undefined}
-                    validationState={ruleRangeErrors[editingRule.id] ? 'error' : undefined}
+                    value={rangeInputs[detail.id] ?? rangeToString(editingRule.range)}
+                    errorText={ruleRangeErrors[detail.id] || undefined}
+                    validationState={ruleRangeErrors[detail.id] ? 'error' : undefined}
                     onChange={({ value }: { name: string; value: string }) => {
-                      const id = editingRule.id;
+                      const id = detail.id;
                       setRangeInputs((prev) => ({ ...prev, [id]: value }));
                       // Commit only empty (= all cells) or a valid range — an
                       // in-progress string must never silently become
@@ -1505,10 +1723,10 @@ export function TableWidgetConfiguration(props: TableWidgetConfigurationProps) {
                   <SelectInput
                     label="Condition"
                     value={CONDITION_LABELS[editingRule.condition]}
-                    isOpen={openConditionRuleId === editingRule.id}
-                    onClick={() => setOpenConditionRuleId((id) => (id === editingRule.id ? null : editingRule.id))}
+                    isOpen={openConditionRuleId === detail.id}
+                    onClick={() => setOpenConditionRuleId((id) => (id === detail.id ? null : detail.id))}
                   >
-                    {openConditionRuleId === editingRule.id && (
+                    {openConditionRuleId === detail.id && (
                       <DropdownMenu>
                         {(Object.keys(CONDITION_LABELS) as ConditionalRuleCondition[]).map((c) => (
                           <ActionListItem
@@ -1516,7 +1734,7 @@ export function TableWidgetConfiguration(props: TableWidgetConfigurationProps) {
                             title={CONDITION_LABELS[c]}
                             isSelected={editingRule.condition === c}
                             onClick={() => {
-                              updateRule(editingRule.id, { condition: c });
+                              updateRule(detail.id, { condition: c });
                               setOpenConditionRuleId(null);
                             }}
                           />
@@ -1526,26 +1744,31 @@ export function TableWidgetConfiguration(props: TableWidgetConfigurationProps) {
                   </SelectInput>
 
                   {NEEDS_VALUE1.includes(editingRule.condition) && (
-                    <div className="wt-config__row">
-                      <TextInput
-                        label={editingRule.condition === 'between' ? 'Min' : 'Value'}
-                        placeholder="0"
-                        value={editingRule.value1}
-                        onChange={({ value }: { name: string; value: string }) =>
-                          updateRuleDebounced(editingRule.id, { value1: value })
-                        }
-                      />
-                      {editingRule.condition === 'between' && (
+                    <>
+                      <div className="wt-config__row">
                         <TextInput
-                          label="Max"
-                          placeholder="100"
-                          value={editingRule.value2}
+                          label={editingRule.condition === 'between' ? 'Min' : 'Value'}
+                          placeholder="0"
+                          value={editingRule.value1}
+                          validationState={ruleError ? 'error' : undefined}
                           onChange={({ value }: { name: string; value: string }) =>
-                            updateRuleDebounced(editingRule.id, { value2: value })
+                            updateRuleDebounced(detail.id, { value1: value })
                           }
                         />
-                      )}
-                    </div>
+                        {editingRule.condition === 'between' && (
+                          <TextInput
+                            label="Max"
+                            placeholder="100"
+                            value={editingRule.value2}
+                            validationState={ruleError ? 'error' : undefined}
+                            onChange={({ value }: { name: string; value: string }) =>
+                              updateRuleDebounced(detail.id, { value2: value })
+                            }
+                          />
+                        )}
+                      </div>
+                      {ruleError && <p className="wt-detail__error BodySmallRegular">{ruleError}</p>}
+                    </>
                   )}
 
                   <Field label="Format">
@@ -1557,7 +1780,7 @@ export function TableWidgetConfiguration(props: TableWidgetConfigurationProps) {
                           leadingIcon={<Bold size={13} />}
                           variant={editingRule.format.bold ? 'Primary' : 'Gray'}
                           size="Small"
-                          onClick={() => updateRule(editingRule.id, { format: { ...editingRule.format, bold: !editingRule.format.bold } })}
+                          onClick={() => updateRule(detail.id, { format: { ...editingRule.format, bold: !editingRule.format.bold } })}
                         />
                       </Tooltip>
                       <Tooltip bodyText="Italicise matching cells" placement="Top">
@@ -1567,7 +1790,7 @@ export function TableWidgetConfiguration(props: TableWidgetConfigurationProps) {
                           leadingIcon={<Italic size={13} />}
                           variant={editingRule.format.italic ? 'Primary' : 'Gray'}
                           size="Small"
-                          onClick={() => updateRule(editingRule.id, { format: { ...editingRule.format, italic: !editingRule.format.italic } })}
+                          onClick={() => updateRule(detail.id, { format: { ...editingRule.format, italic: !editingRule.format.italic } })}
                         />
                       </Tooltip>
                     </div>
@@ -1577,7 +1800,7 @@ export function TableWidgetConfiguration(props: TableWidgetConfigurationProps) {
                     label="Fill"
                     value={editingRule.format.cellColor || '#ffffff'}
                     onChange={(color: string) =>
-                      updateRule(editingRule.id, { format: { ...editingRule.format, cellColor: color } })
+                      updateRule(detail.id, { format: { ...editingRule.format, cellColor: color } })
                     }
                   />
 
@@ -1585,7 +1808,7 @@ export function TableWidgetConfiguration(props: TableWidgetConfigurationProps) {
                     label="Text"
                     value={editingRule.format.textColor || '#1a1a1a'}
                     onChange={(color: string) =>
-                      updateRule(editingRule.id, { format: { ...editingRule.format, textColor: color } })
+                      updateRule(detail.id, { format: { ...editingRule.format, textColor: color } })
                     }
                   />
                 </>

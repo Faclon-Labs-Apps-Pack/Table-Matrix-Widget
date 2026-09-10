@@ -13,7 +13,7 @@
   gap: var(--spacing-01, 2px);
   padding: var(--spacing-02, 4px) var(--spacing-04, 12px);
   height: 44px;
-  border-bottom: 1px solid var(--fds-border-subtle, #eee);
+  border-bottom: 1px solid var(--border-gray-subtle, #eee);
   background: var(--background-default-intense, #fff);
   overflow-x: auto;
   overflow-y: hidden;
@@ -21,6 +21,10 @@
 /* Hide scrollbar on toolbar */
 .vg-toolbar::-webkit-scrollbar { display: none; }
 .vg-toolbar { scrollbar-width: none; }
+/* Tooltip wraps each tool in a span of its own — keep those spans from being
+   squeezed when the toolbar overflows, exactly like the tools themselves. */
+.vg-toolbar > .fds-tooltip-wrapper,
+.vg-toolbar > .fds-popover { flex-shrink: 0; }
 /* Toolbar hidden state — preserves height to prevent grid layout shift */
 .vg-toolbar--hidden {
   visibility: hidden;
@@ -31,7 +35,7 @@
   display: inline-block;
   width: 1px;
   height: 18px;
-  background: var(--fds-border-subtle, #e0e0e0);
+  background: var(--border-gray-subtle, #e0e0e0);
   margin: 0 var(--spacing-02, 4px);
 }
 /* ── Font size input ── */
@@ -39,7 +43,7 @@
   width: 44px;
   height: 28px;
   padding: 0 var(--spacing-02, 4px);
-  border: 1px solid var(--fds-border-subtle, #ddd);
+  border: 1px solid var(--border-gray-subtle, #ddd);
   border-radius: var(--global-border-radius-medium, 4px);
   font-size: 13px;
   text-align: center;
@@ -76,7 +80,7 @@
 }
 .vg-color-trigger:hover {
   background: var(--background-gray-hover-light, #f0f0f0);
-  border-color: var(--fds-border-subtle, #ddd);
+  border-color: var(--border-gray-subtle, #ddd);
 }
 /* Colored bar below the icon (shows current color) */
 .vg-color-trigger__bar {
@@ -122,56 +126,51 @@
   position: absolute;
   inset: 22px;
   background: var(--background-default-intense, #fff);
-  border: 1px solid var(--fds-border-subtle, #eee);
+  border: 1px solid var(--border-gray-subtle, #eee);
   border-radius: 2px;
   pointer-events: none;
 }
-/* Shared side styles */
-.vg-border-diagram__top,
-.vg-border-diagram__bottom {
+/* Each side is a Tooltip wrapper (which is position: relative and would
+   otherwise become the positioning parent) holding the bar that fills it, so
+   the placement lives on the wrapper and the visuals on the bar. */
+.vg-border-diagram__side {
   position: absolute;
+}
+.vg-border-diagram__side--top,
+.vg-border-diagram__side--bottom {
   left: 16px;
   right: 16px;
   height: 8px;
-  border-radius: 4px;
-  cursor: pointer;
-  background: var(--fds-border-default, #ccc);
-  transition: background 0.12s, transform 0.1s;
 }
-.vg-border-diagram__left,
-.vg-border-diagram__right {
-  position: absolute;
+.vg-border-diagram__side--left,
+.vg-border-diagram__side--right {
   top: 16px;
   bottom: 16px;
   width: 8px;
+}
+.vg-border-diagram__side--top    { top: 8px; }
+.vg-border-diagram__side--bottom { bottom: 8px; }
+.vg-border-diagram__side--left   { left: 8px; }
+.vg-border-diagram__side--right  { right: 8px; }
+
+.vg-border-diagram__bar {
+  width: 100%;
+  height: 100%;
   border-radius: 4px;
   cursor: pointer;
-  background: var(--fds-border-default, #ccc);
+  background: var(--border-gray-default, #ccc);
   transition: background 0.12s, transform 0.1s;
 }
-.vg-border-diagram__top    { top: 8px; }
-.vg-border-diagram__bottom { bottom: 8px; }
-.vg-border-diagram__left   { left: 8px; }
-.vg-border-diagram__right  { right: 8px; }
 /* Active = brand blue */
-[data-active="true"].vg-border-diagram__top,
-[data-active="true"].vg-border-diagram__bottom,
-[data-active="true"].vg-border-diagram__left,
-[data-active="true"].vg-border-diagram__right {
+.vg-border-diagram__bar[data-active="true"] {
   background: var(--background-brand-default, #0073ea);
 }
 /* Hover */
-.vg-border-diagram__top:hover,
-.vg-border-diagram__bottom:hover,
-.vg-border-diagram__left:hover,
-.vg-border-diagram__right:hover {
+.vg-border-diagram__bar:hover {
   background: var(--text-default-secondary, #444);
   transform: scale(1.15);
 }
-[data-active="true"].vg-border-diagram__top:hover,
-[data-active="true"].vg-border-diagram__bottom:hover,
-[data-active="true"].vg-border-diagram__left:hover,
-[data-active="true"].vg-border-diagram__right:hover {
+.vg-border-diagram__bar[data-active="true"]:hover {
   background: var(--background-brand-default, #0073ea);
   opacity: 0.75;
 }
@@ -183,7 +182,7 @@
   width: 52px;
   height: 28px;
   border-radius: var(--global-border-radius-medium, 4px);
-  border: 1px solid var(--fds-border-subtle, #ddd);
+  border: 1px solid var(--border-gray-subtle, #ddd);
   cursor: pointer;
   background: var(--background-default-intense, #fff);
   transition: background 0.1s, border-color 0.1s;
@@ -191,7 +190,7 @@
 }
 .vg-border-style-btn:hover {
   background: var(--background-gray-hover-light, #f0f0f0);
-  border-color: var(--fds-border-default, #bbb);
+  border-color: var(--border-gray-default, #bbb);
 }
 .vg-border-style-btn--active {
   background: var(--background-info-secondary, #e8f4fd);
@@ -212,7 +211,7 @@
   align-items: center;
   flex-shrink: 0;
   height: 28px;
-  border-bottom: 1px solid var(--fds-border-subtle, #eee);
+  border-bottom: 1px solid var(--border-gray-subtle, #eee);
   background: var(--background-default-intense, #fff);
   font-size: 12px;
 }
@@ -227,7 +226,7 @@
   text-align: center;
   color: var(--background-brand-default, #0073ea);
   background: var(--background-info-secondary, #e8f4fd);
-  border-right: 1px solid var(--fds-border-subtle, #eee);
+  border-right: 1px solid var(--border-gray-subtle, #eee);
 }
 .vg-formula-bar__fx {
   padding: 0 var(--spacing-03, 8px);
@@ -235,7 +234,7 @@
   font-style: italic;
   font-size: 13px;
   flex-shrink: 0;
-  border-right: 1px solid var(--fds-border-subtle, #eee);
+  border-right: 1px solid var(--border-gray-subtle, #eee);
 }
 .vg-formula-bar__content {
   flex: 1;
@@ -299,7 +298,7 @@
   font-weight: 600;
   color: var(--text-default-secondary, #666);
   justify-content: center;
-  border-bottom: 2px solid var(--fds-border-default, #bbb);
+  border-bottom: 2px solid var(--border-gray-default, #bbb);
   cursor: pointer;
   position: sticky;
   top: 0;
@@ -316,7 +315,7 @@
   top: 0;
   left: 0;
   z-index: 3;
-  border-right: 2px solid var(--fds-border-default, #bbb);
+  border-right: 2px solid var(--border-gray-default, #bbb);
 }
 /* ── Row number cells ── */
 .vg-rownum-cell {
@@ -324,7 +323,7 @@
   font-size: 11px;
   color: var(--text-default-tertiary, #aaa);
   justify-content: center;
-  border-right: 2px solid var(--fds-border-default, #bbb);
+  border-right: 2px solid var(--border-gray-default, #bbb);
   cursor: pointer;
   position: sticky;
   left: 0;
@@ -369,8 +368,8 @@
   box-shadow: inset 0 0 0 2px var(--background-info-default, #0078d4);
 }
 /* ── Frozen row / column ── */
-.vg-cell--frozen-row { border-bottom-color: var(--fds-border-default, #bbb); }
-.vg-cell--frozen-col { border-right-color:  var(--fds-border-default, #bbb); }
+.vg-cell--frozen-row { border-bottom-color: var(--border-gray-default, #bbb); }
+.vg-cell--frozen-col { border-right-color:  var(--border-gray-default, #bbb); }
 /* ── Bound cell indicator ── */
 /* A small triangle in the top-right corner marks a cell that carries a UNS
    binding (value populated by the service, not typeable). Rendered via ::before
@@ -449,7 +448,7 @@
 .vg-numfmt-select {
   height: 28px;
   padding: 0 var(--spacing-02, 4px);
-  border: 1px solid var(--fds-border-subtle, #ddd);
+  border: 1px solid var(--border-gray-subtle, #ddd);
   border-radius: var(--global-border-radius-medium, 4px);
   font-size: 12px;
   color: var(--text-default-primary, #1a1a1a);
@@ -468,7 +467,7 @@
   z-index: 1000;
   min-width: 190px;
   background: var(--background-default-intense, #fff);
-  border: 1px solid var(--fds-border-subtle, #ddd);
+  border: 1px solid var(--border-gray-subtle, #ddd);
   border-radius: var(--global-border-radius-medium, 6px);
   box-shadow: 0 4px 16px rgba(0, 0, 0, 0.12), 0 1px 4px rgba(0, 0, 0, 0.08);
   padding: 4px 0;
@@ -500,7 +499,7 @@
 }
 .vg-context-menu__sep {
   height: 1px;
-  background: var(--fds-border-subtle, #eee);
+  background: var(--border-gray-subtle, #eee);
   margin: 3px 0;
 }
 /* ── Cell hyperlink ─────────────────────────────────────────────────────── */
@@ -544,10 +543,28 @@
   box-shadow: inset 0 0 0 2px var(--background-brand-default, #0073ea);
 }
 /* ── Color panel inside a toolbar popover ── */
-.vg-color-panel {
-  width: 236px;
-  padding: var(--spacing-02, 4px);
+/* One surface, not two: the popover panel already draws the card, so the
+   picker mounted inside it drops its own border, shadow and padding, and the
+   panel shrinks from its default 328px to the picker's own width. */
+.fds-popover__panel[id^="vg-color-picker"] {
+  width: max-content;
 }
+.vg-color-panel {
+  width: 240px;
+}
+.vg-color-panel .fds-color-picker {
+  width: 100%;
+  padding: 0;
+  border: none;
+  box-shadow: none;
+  background: transparent;
+}
+/* SDK correction: the picker's opacity field is 2px narrower than the "100"
+   it always starts at, so the last digit is clipped. */
+.vg-color-panel .fds-color-config__opacity {
+  width: 40px;
+}
+
 /* ── Decimal places control ── */
 .vg-numfmt-decimals {
   display: inline-flex;

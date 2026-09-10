@@ -134,7 +134,7 @@
           ],
           "minimum": 0,
           "maximum": 10,
-          "description": "Per-cell decimal places. null = inherit uiConfig.dataPrecision."
+          "description": "Per-cell decimal places. null = inherit the precision of the binding that fills the cell (none, for an unbound cell)."
         }
       }
     }
@@ -414,6 +414,19 @@
               "topic": {
                 "type": "string",
                 "description": "Mapped UNS path, e.g. \"{{uns:wsId://path}}\"."
+              },
+              "unit": {
+                "type": "string",
+                "description": "Suffix shown after the value, e.g. \"kWh\". Absent or \"\" = no unit."
+              },
+              "precision": {
+                "type": [
+                  "integer",
+                  "null"
+                ],
+                "minimum": 0,
+                "maximum": 10,
+                "description": "Decimal places for this binding's values. Absent or null = show them exactly as resolved."
               }
             }
           }
@@ -456,6 +469,19 @@
                 "type": "integer",
                 "minimum": 0,
                 "description": "Max cells to fill; 0 = no cap (fill whole array)."
+              },
+              "unit": {
+                "type": "string",
+                "description": "Suffix shown after the value, e.g. \"kWh\". Absent or \"\" = no unit."
+              },
+              "precision": {
+                "type": [
+                  "integer",
+                  "null"
+                ],
+                "minimum": 0,
+                "maximum": 10,
+                "description": "Decimal places for this binding's values. Absent or null = show them exactly as resolved."
               }
             }
           }
@@ -689,15 +715,6 @@
               "description": "Show the in-table search field in the widget header. Defaults to false."
             }
           }
-        },
-        "dataPrecision": {
-          "type": [
-            "integer",
-            "null"
-          ],
-          "minimum": 0,
-          "maximum": 10,
-          "description": "Default decimal places for numeric cell values. null = render the resolved number untouched. A cell's own format.decimals overrides it. Defaults to 2 when absent."
         },
         "timeDisplay": {
           "type": "string",

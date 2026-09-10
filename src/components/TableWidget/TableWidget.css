@@ -6,7 +6,7 @@
   height: 100%;
   box-sizing: border-box;
   background: var(--background-default-intense, #fff);
-  border: 1px solid var(--fds-border-subtle, #eee);
+  border: 1px solid var(--border-gray-subtle, #eee);
   overflow: hidden;
 }
 
@@ -40,72 +40,39 @@
 .tw-topbar__actions {
   display: flex;
   align-items: center;
-  gap: var(--spacing-02, 6px);
+  gap: var(--spacing-03, 8px);
   margin-left: auto;
   flex-shrink: 0;
 }
 
 /* ── Header actions (ChartActions: settings + more) ── */
-.tw-actions {
-  display: flex;
-  align-items: center;
-  flex-shrink: 0;
-}
-
-/* ── More (⋯) menu ── */
-.tw-menu {
-  position: fixed;
-  z-index: 1000;
-  background: var(--background-default-intense, #fff);
-  border: 1px solid var(--fds-border-subtle, #ddd);
-  border-radius: var(--global-border-radius-medium, 6px);
-  box-shadow: 0 4px 16px rgba(0, 0, 0, 0.12), 0 1px 4px rgba(0, 0, 0, 0.08);
-  padding: 4px 0;
-  overflow: hidden;
-}
-
-.tw-menu__item {
+/* ChartActions renders its icons as a bare fragment, so the spacing between
+   them — and between them and the search box — is set here. */
+.tw-actions,
+.tw-actions .fds-popover__trigger {
   display: flex;
   align-items: center;
   gap: var(--spacing-03, 8px);
-  width: 100%;
-  padding: 6px 14px;
-  font-size: 13px;
-  line-height: 1.5;
-  text-align: left;
-  background: transparent;
-  border: none;
-  cursor: pointer;
-  color: var(--text-default-primary, #1a1a1a);
-  white-space: nowrap;
-}
-.tw-menu__item:hover {
-  background: var(--background-gray-hover-light, #f0f0f0);
+  flex-shrink: 0;
 }
 
-.tw-menu__empty {
-  margin: 0;
-  padding: 6px 14px;
-  font-size: 12px;
-  color: var(--text-default-tertiary, #999);
-}
-
-/* ── Table settings panel ── */
-.tw-settings-modal .fds-modal {
-  width: 300px;
-}
-
+/* ── Table Control popover ── */
 .tw-settings__body {
   display: flex;
   flex-direction: column;
   gap: var(--spacing-04, 12px);
 }
 
-.tw-settings__note {
+/* "Download Type" — a second section heading inside the popover body, matching
+   the header's own type so the two read as siblings. */
+.tw-settings__heading {
   margin: 0;
-  font-size: 11px;
-  line-height: 1.5;
-  color: var(--text-default-tertiary, #999);
+  color: var(--text-default-primary, #1a1a1a);
+}
+
+.tw-settings__downloads {
+  display: flex;
+  gap: var(--spacing-03, 8px);
 }
 
 /* ── In-table search ── */
@@ -126,11 +93,18 @@
   gap: 2px;
 }
 
+/* "3 of 17", or "No results" — the find-box readout, sized for the widest of
+   the two so stepping through matches never shifts the chevrons. */
 .tw-search__count {
   font-size: 11px;
+  white-space: nowrap;
   color: var(--text-default-secondary, #666);
-  min-width: 34px;
+  min-width: 58px;
   text-align: right;
+}
+
+.tw-search__count--empty {
+  color: var(--text-gray-subtle, #888);
 }
 
 .tw-table-section {
@@ -138,7 +112,7 @@
   display: flex;
   flex-direction: column;
   overflow: hidden;
-  border-top: 1px solid var(--fds-border-subtle, #eee);
+  border-top: 1px solid var(--border-gray-subtle, #eee);
 }
 
 /* ── Row Filter toolbar ─────────────────────────────────────────────────── */
@@ -149,7 +123,7 @@
   flex-wrap: wrap;
   gap: var(--spacing-02, 6px);
   padding: var(--spacing-02, 6px) 0;
-  border-top: 1px solid var(--fds-border-subtle, #eee);
+  border-top: 1px solid var(--border-gray-subtle, #eee);
   flex-shrink: 0;
 }
 
@@ -192,7 +166,7 @@
 /* Segmented control (self-contained so the widget bundle needs no config CSS) */
 .tw-seg-group {
   display: flex;
-  border: 1px solid var(--fds-border-subtle, #ddd);
+  border: 1px solid var(--border-gray-subtle, #ddd);
   border-radius: var(--global-border-radius-medium, 6px);
   overflow: hidden;
 }
@@ -203,7 +177,7 @@
   font-size: 12px;
   background: var(--background-default-intense, #fff);
   border: none;
-  border-right: 1px solid var(--fds-border-subtle, #eee);
+  border-right: 1px solid var(--border-gray-subtle, #eee);
   cursor: pointer;
   color: var(--text-default-secondary, #555);
 }

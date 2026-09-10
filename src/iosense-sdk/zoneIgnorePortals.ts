@@ -21,6 +21,7 @@ const PORTAL_SELECTORS = [
   '.fds-dropdown-menu__wrapper',
   '.fds-popover',
   '.fds-modal',
+  '.fds-tooltip',                   // hover labels on the widget toolbar
 ];
 
 const SELECTOR = PORTAL_SELECTORS.join(',');

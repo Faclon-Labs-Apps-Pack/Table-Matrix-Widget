@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useRef } from 'react';
+import { useCallback, useEffect, useRef, useState } from 'react';
 import { CounterInput } from '@faclon-labs/design-sdk';
 
 interface NumberFieldProps {
@@ -49,9 +49,25 @@ interface NumberFieldProps {
  *
  * `passive: false` is required — a passive listener cannot preventDefault, and
  * browsers default wheel listeners to passive.
+ *
+ * ── 3. The field can be emptied ─────────────────────────────────────────────
+ *
+ * Select-all + Backspace has to leave an empty box the user can type into, and
+ * a half-typed number must not be pushed to the widget: in a field with
+ * `min={8}`, typing the "1" of "12" would otherwise commit 8 (or 1) and repaint
+ * the table mid-keystroke.
+ *
+ * So the component holds a DRAFT while the user is mid-edit. Only a value
+ * inside [min, max] is passed up; an empty or out-of-range draft stays local
+ * until blur, where it is clamped (or, if empty, abandoned in favour of the
+ * value the parent already has). The parent therefore never sees null and its
+ * callers stay as they are.
  */
 export function NumberField({ onChange, ...rest }: NumberFieldProps) {
   const inputRef = useRef<HTMLInputElement>(null);
+  // undefined = show the committed value; anything else is the in-progress
+  // edit, including null for "the box is empty".
+  const [draft, setDraft] = useState<number | null | undefined>(undefined);
 
   // The wheel listener is attached once, so it reads the current props through
   // a ref rather than closing over the values from its own render.
@@ -94,11 +110,42 @@ export function NumberField({ onChange, ...rest }: NumberFieldProps) {
     };
   }, []);
 
+  const { min, max, value } = rest;
+
   const handleChange = useCallback(
-    ({ value }: { name: string; value: number | null }) =>
-      onChange(value === null ? null : Math.abs(value)),
-    [onChange],
+    ({ value: next }: { name: string; value: number | null }) => {
+      if (next === null) { setDraft(null); return; }   // emptied — hold it
+      const positive = Math.abs(next);
+      const inRange =
+        (typeof min !== 'number' || positive >= min) && (typeof max !== 'number' || positive <= max);
+      setDraft(inRange ? undefined : positive);
+      if (inRange) onChange(positive);
+    },
+    [onChange, min, max],
   );
 
-  return <CounterInput ref={inputRef} onChange={handleChange} {...rest} />;
+  // Leaving the field settles it: an empty box falls back to what the parent
+  // holds, an out-of-range number is clamped into it.
+  const handleBlur = useCallback(() => {
+    setDraft((current) => {
+      if (current === undefined) return undefined;
+      if (current !== null) {
+        let settled = current;
+        if (typeof min === 'number' && settled < min) settled = min;
+        if (typeof max === 'number' && settled > max) settled = max;
+        onChange(settled);
+      }
+      return undefined;
+    });
+  }, [onChange, min, max]);
+
+  return (
+    <CounterInput
+      ref={inputRef}
+      {...rest}
+      value={draft !== undefined ? draft : value}
+      onChange={handleChange}
+      onBlur={handleBlur}
+    />
+  );
 }
