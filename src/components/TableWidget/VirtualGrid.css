@@ -507,20 +507,9 @@
   color: var(--text-link, #0073ea);
   text-decoration: underline;
 }
-.vg-link-panel {
-  display: flex;
-  flex-direction: column;
-  gap: var(--spacing-03, 8px);
-  width: 220px;
-}
-.vg-link-panel__row {
-  display: flex;
-  gap: var(--spacing-02, 6px);
-}
-.vg-link-panel__hint {
-  margin: 0;
-  font-size: 11px;
-  color: var(--text-gray-subtle, #888);
+/* PopoverFooter right-aligns its buttons; Remove breaks away to the left. */
+.vg-link-footer__remove {
+  margin-right: auto;
 }
 /* ── Locked fit-to-width ───────────────────────────────────────────────────
    Columns are scaled to the wrapper's client width, so a horizontal scrollbar

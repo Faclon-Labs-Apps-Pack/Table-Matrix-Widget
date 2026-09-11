@@ -590,15 +590,41 @@ export function TableWidget(props: TableWidgetProps) {
   // the host round-trips a CONFIG_CHANGE, so consecutive edits (two quick
   // popover clicks, an insert-row remap followed by a binding edit) must build
   // on what we last emitted — not on the stale prop — or the first edit is
-  // silently lost. A pending key is cleared the moment the round-trip catches
-  // up with it (effect below), after which cfg is the single truth again.
+  // silently lost.
+  //
+  // Each pending key remembers the cfg value it was derived FROM, which is what
+  // separates the two ways a new cfg can disagree with it:
+  //
+  //   cfg[key] === pending value  → the round-trip caught up. Drop it; cfg is
+  //                                 the single truth again.
+  //   cfg[key] === base           → the host has not caught up yet. Keep it, or
+  //                                 the next emit reverts our own edit.
+  //   neither                     → somebody else (the configurator, another
+  //                                 session) changed this field after we did.
+  //                                 Theirs is newer: drop ours, or every later
+  //                                 cell edit would re-apply our stale value on
+  //                                 top of their bindings/rules for good.
   const pendingUiRef = useRef<Partial<TableWidgetUIConfig>>({});
+  const pendingBaseRef = useRef<Partial<TableWidgetUIConfig>>({});
+
+  function setPending<K extends keyof TableWidgetUIConfig>(key: K, value: TableWidgetUIConfig[K]) {
+    if (!(key in pendingBaseRef.current)) pendingBaseRef.current[key] = cfg[key];
+    pendingUiRef.current[key] = value;
+  }
+
+  function dropPending(key: keyof TableWidgetUIConfig) {
+    delete pendingUiRef.current[key];
+    delete pendingBaseRef.current[key];
+  }
 
   useEffect(() => {
     const p = pendingUiRef.current;
     (Object.keys(p) as (keyof TableWidgetUIConfig)[]).forEach((key) => {
-      if (JSON.stringify(p[key]) === JSON.stringify(cfg[key])) delete p[key];
+      const incoming = JSON.stringify(cfg[key]);
+      if (incoming === JSON.stringify(p[key])) { dropPending(key); return; }        // caught up
+      if (incoming !== JSON.stringify(pendingBaseRef.current[key])) dropPending(key); // superseded
     });
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [cfg]);
 
   function latest<K extends keyof RemappableConfig>(key: K): RemappableConfig[K] {
@@ -693,26 +719,54 @@ export function TableWidget(props: TableWidgetProps) {
         },
         mutation,
       );
-      Object.assign(pendingUiRef.current, remapped);
+      (Object.keys(remapped) as (keyof typeof remapped)[]).forEach((key) => setPending(key, remapped[key]));
     }
     if (emitTimerRef.current) clearTimeout(emitTimerRef.current);
     emitTimerRef.current = setTimeout(() => emitUiConfigRef.current(), 400);
   }
 
-  // Flush a pending debounced emit on unmount so the last edit isn't lost.
-  useEffect(() => () => {
-    if (emitTimerRef.current) {
-      clearTimeout(emitTimerRef.current);
-      emitUiConfigRef.current();
-    }
+  // Edits are coalesced into one CONFIG_CHANGE ~400 ms after the last keystroke,
+  // which leaves a window where the last edit exists only in this component.
+  // Every way out of that window flushes it.
+  function flushPendingEmit() {
+    if (!emitTimerRef.current) return;
+    clearTimeout(emitTimerRef.current);
+    emitTimerRef.current = null;
+    emitUiConfigRef.current();
+  }
+
+  const flushRef = useRef(flushPendingEmit);
+  flushRef.current = flushPendingEmit;
+
+  // Unmount (the host tearing the widget down, a dashboard navigation).
+  useEffect(() => () => flushRef.current(), []);
+
+  // The tab being closed or hidden. `unmount` never runs for a closed tab, so
+  // without this the last edit before a close is lost with no trace.
+  useEffect(() => {
+    const flush = () => flushRef.current();
+    const onHide = () => { if (document.visibilityState === 'hidden') flush(); };
+    window.addEventListener('pagehide', flush);
+    document.addEventListener('visibilitychange', onHide);
+    return () => {
+      window.removeEventListener('pagehide', flush);
+      document.removeEventListener('visibilitychange', onHide);
+    };
   }, []);
+
+  // Locking the table is the operator saying "this is finished" — nothing is
+  // editable past that point, so anything still in flight goes now rather than
+  // riding on a timer nobody is watching.
+  useEffect(() => {
+    if (cfg.locked) flushRef.current();
+  }, [cfg.locked]);
 
   // All binding edits build on latest() — the pending layer, not the cfg prop —
   // so two quick popover edits can't lose the first one while the host is
   // still round-tripping (the classic slow-host race).
   function emitConfig(cellBindings: typeof cfg.cellBindings, seriesBindings: typeof cfg.seriesBindings) {
-    pendingUiRef.current.cellBindings = cellBindings;
-    pendingUiRef.current.seriesBindings = seriesBindings;
+    setPending('cellBindings', cellBindings);
+    setPending('seriesBindings', seriesBindings);
     emitUiConfig({ cellBindings, seriesBindings });
   }
 
@@ -806,7 +860,7 @@ export function TableWidget(props: TableWidgetProps) {
     setHScroll(next);
     // Park it in the pending layer too, so an unrelated emit in flight (a cell
     // edit, a resize) rebuilt from the still-stale cfg can't revert the toggle.
-    pendingUiRef.current.lockedHorizontalScroll = next;
+    setPending('lockedHorizontalScroll', next);
     emitUiConfig({ lockedHorizontalScroll: next });
   }
 

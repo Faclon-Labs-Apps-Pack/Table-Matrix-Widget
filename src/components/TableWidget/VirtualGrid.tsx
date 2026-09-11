@@ -1,6 +1,6 @@
 import { useState, useEffect, useRef } from 'react';
 import { useVirtualizer } from '@tanstack/react-virtual';
-import { Button, Popover, PopoverHeader, PopoverBody, ColorInput, TextInput, Tooltip } from '@faclon-labs/design-sdk';
+import { Button, Popover, PopoverHeader, PopoverBody, PopoverFooter, ColorInput, TextInput, Tooltip } from '@faclon-labs/design-sdk';
 import { Bold, Italic, Underline, AlignLeft, AlignCenter, AlignRight, Grid, Droplet, Type, Link as LinkIcon, Hash, Settings, XSquare } from 'react-feather';
 import { ColorTool } from './ColorTool';
 import { CellDataStore, CellId, makeDefaultFormat } from './CellDataStore';
@@ -366,6 +366,26 @@ export function VirtualGrid({ rows, columns, freezeRows, freezeColumns, configCo
   const [borderConfig, setBorderConfig] = useState<{
     color: string; style: BorderStyle; width: BorderWidth;
   }>({ color: '#cccccc', style: 'solid', width: 1 });
+
+  // The panel is controlled so it can refuse one kind of "outside" click: the
+  // border ColorInput portals its picker to <body>, beside the popover panel
+  // rather than inside it, so Popover reads a click on a preset swatch as a
+  // click away and unmounts the panel — picker and all — mid-choice. A capture
+  // listener runs before Popover's own mousedown handler and notes where the
+  // press landed, and the close request is dropped when it was in that picker.
+  // The note lives for that one press only, so a later Escape or ✕ still closes.
+  const [bordersOpen, setBordersOpen] = useState(false);
+  const pressInBorderPickerRef = useRef(false);
+  useEffect(() => {
+    if (!bordersOpen) return;
+    const onPress = (e: MouseEvent) => {
+      pressInBorderPickerRef.current =
+        e.target instanceof Element && !!e.target.closest('.fds-color-input__popover');
+      setTimeout(() => { pressInBorderPickerRef.current = false; });
+    };
+    document.addEventListener('mousedown', onPress, true);
+    return () => document.removeEventListener('mousedown', onPress, true);
+  }, [bordersOpen]);
 
   // ── Context menu ──────────────────────────────────────────────────────────
   const [contextMenu, setContextMenu] = useState<ContextMenuState | null>(null);
@@ -1544,11 +1564,12 @@ export function VirtualGrid({ rows, columns, freezeRows, freezeColumns, configCo
         >
           <PopoverHeader title="Cell Link" showClose />
           <PopoverBody>
-            <div className="vg-link-panel" onClick={(e) => e.stopPropagation()}>
+            <div onClick={(e) => e.stopPropagation()}>
               <TextInput
                 label="URL"
                 placeholder="https://…"
                 value={linkDraft}
+                helpText="Cmd/Ctrl + Click to open"
                 errorText={linkError || undefined}
                 validationState={linkError ? 'error' : undefined}
                 onChange={({ value }: { name: string; value: string }) => {
@@ -1560,28 +1581,33 @@ export function VirtualGrid({ rows, columns, freezeRows, freezeColumns, configCo
                   if (e.key === 'Escape') { e.preventDefault(); closeLinkPanel(); }
                 }}
               />
-              {currentLink && (
-                <Button
-                  variant="Secondary"
-                  size="XSmall"
-                  isFullWidth
-                  label="Remove link"
-                  onClick={() => { setLinkDraft(''); applyFmt({ link: '' }); setLinkOpen(false); }}
-                />
-              )}
-              <div className="vg-link-panel__row">
-                <Button variant="Secondary" size="XSmall" label="Cancel" onClick={closeLinkPanel} />
-                <Button variant="Primary" size="XSmall" label="Apply" onClick={applyLink} />
-              </div>
-              <p className="vg-link-panel__hint">Opens on click when the table is locked, or on Ctrl/Cmd-click while editing.</p>
             </div>
           </PopoverBody>
+          <PopoverFooter>
+            {/* Destructive action on the far left, away from the confirm pair. */}
+            {currentLink && (
+              <Button
+                className="vg-link-footer__remove"
+                variant="Gray"
+                size="Small"
+                label="Remove"
+                onClick={() => { setLinkDraft(''); applyFmt({ link: '' }); setLinkOpen(false); }}
+              />
+            )}
+            <Button variant="Secondary" size="Small" label="Cancel" onClick={closeLinkPanel} />
+            <Button variant="Primary" size="Small" label="Apply" onClick={applyLink} />
+          </PopoverFooter>
         </Popover>
 
         <span className="vg-divider" />
 
         {/* Cell borders */}
         <Popover
+          isOpen={bordersOpen}
+          onOpenChange={(open: boolean) => {
+            if (!open && pressInBorderPickerRef.current) return;
+            setBordersOpen(open);
+          }}
           trigger={
             <ToolButton label="Borders" icon={<Grid size={14} />} />
           }
