@@ -136,6 +136,10 @@ interface TableWidgetProps {
    *  topic. Binding edits are emitted as an onEvent CONFIG_CHANGE — the widget
    *  never writes the envelope itself; the host persists it. */
   editable?: boolean;
+  /** Host is showing this widget in edit mode (true) or view mode (false). */
+  editMode?: boolean;
+  /** Host persists canvas CONFIG_CHANGE. Only the new IOSense host sends it. */
+  canvasConfig?: boolean;
   /** UNS topic-browser injection for the Cell Config popover. When absent the
    *  popover falls back to a plain text field (paste a topic). Same contract the
    *  configurator uses; the host provides these. */
@@ -177,7 +181,12 @@ function useIsTruncated(deps: unknown[]) {
 }
 
 export function TableWidget(props: TableWidgetProps) {
-  const { config, data, onEvent, editable = false, unsWorkspaces, isLoadingWorkspaces, loadUnsChildren, searchUnsNodes, authentication } = props;
+  const { config, data, onEvent, editable: editableProp, editMode, canvasConfig, unsWorkspaces, isLoadingWorkspaces, loadUnsChildren, searchUnsNodes, authentication } = props;
+  // Only a host that persists canvas CONFIG_CHANGE may receive one: anywhere
+  // else a cell edit would appear to save and then vanish on the next load.
+  const canPersist = canvasConfig === true;
+  const editable = editableProp ?? false;                          // binding popover: explicit prop only
+  const emitsCellEdits = editableProp ?? (canPersist && editMode === true);
   const storeRef = useRef<CellDataStore | null>(null);
   if (storeRef.current === null) {
     storeRef.current = new CellDataStore();
@@ -699,8 +708,10 @@ export function TableWidget(props: TableWidgetProps) {
     });
   }
 
-  // Grid edits arrive in bursts (typing, drag-resize, multi-cell formatting) —
-  // coalesce them into one CONFIG_CHANGE ~400 ms after the last mutation.
+  // Every grid change is emitted the moment it happens. Each call is already a
+  // discrete action (a cell commit, paste, clear, format, insert/delete, freeze,
+  // resize end), so there is no burst to coalesce, and a debounce only opened a
+  // window where the last edit existed nowhere but this component.
   const emitUiConfigRef = useRef(emitUiConfig);
   emitUiConfigRef.current = emitUiConfig;
 
@@ -722,12 +733,14 @@ export function TableWidget(props: TableWidgetProps) {
       (Object.keys(remapped) as (keyof typeof remapped)[]).forEach((key) => setPending(key, remapped[key]));
     }
     if (emitTimerRef.current) clearTimeout(emitTimerRef.current);
-    emitTimerRef.current = setTimeout(() => emitUiConfigRef.current(), 400);
+    emitTimerRef.current = null;
+    emitUiConfigRef.current();
   }
 
-  // Edits are coalesced into one CONFIG_CHANGE ~400 ms after the last keystroke,
-  // which leaves a window where the last edit exists only in this component.
-  // Every way out of that window flushes it.
+  // Grid edits no longer wait on a timer (see handleGridChange), so nothing is
+  // ever pending here and these flushes are no-ops. They stay as a safety net
+  // in case a debounced path is reintroduced: every way out of the widget
+  // flushes whatever is still in flight.
   function flushPendingEmit() {
     if (!emitTimerRef.current) return;
     clearTimeout(emitTimerRef.current);
@@ -914,8 +927,14 @@ export function TableWidget(props: TableWidgetProps) {
       // Cells that DO something with a double-click (entering cell edit mode on
       // an unlocked table) stop propagation themselves, so the two never fire
       // for the same gesture.
+      //
+      // Only hosts that speak the protocol get the event: the new IOSense host
+      // (canvasConfig) and anything passing `editable` explicitly (the dev
+      // harness). IOSense prod sends neither, and there the event triggered a
+      // refetch rather than opening anything.
       onDoubleClick={(e) => {
         if (isControlTarget(e.target)) return;
+        if (!canPersist && editableProp === undefined) return;   // IOSense prod sends neither
         onEvent({ type: 'EDIT_WIDGET', payload: { editMode: true } });
       }}
     >
@@ -1130,7 +1149,10 @@ export function TableWidget(props: TableWidgetProps) {
           onCellConfigure={editable && !cfg.locked ? openCellConfig : undefined}
           hiddenRows={filterVisibility.hiddenRows}
           rowColors={filterVisibility.rowColors}
-          onUserChange={editable && !cfg.locked ? handleGridChange : undefined}
+          onUserChange={emitsCellEdits && !cfg.locked ? handleGridChange : undefined}
+          // View mode on a host that persists edits: the grid still selects and
+          // copies, it just cannot be changed.
+          readOnly={canPersist && editMode !== true}
         />
       </div>
 

@@ -28,6 +28,10 @@ interface ColorToolProps {
    *  where "no colour" is a real state rather than a shade of white. */
   emptyBar?: boolean;
   onChange: (hex: string) => void;
+  /** The colour gesture has ended — a drag released, a swatch picked, the
+   *  picker closed. Dragging calls onChange on every pointer move, so the
+   *  owner can hold its emit until this fires. */
+  onCommit?: () => void;
 }
 
 type ConfigMode = 'Hex' | 'RGB';
@@ -48,7 +52,7 @@ function withAlpha(hex: string, alpha: number): string {
   return `${base}${a.toString(16).padStart(2, '0').toUpperCase()}`;
 }
 
-export function ColorTool({ label, icon, value, fallback, emptyBar, onChange }: ColorToolProps) {
+export function ColorTool({ label, icon, value, fallback, emptyBar, onChange, onCommit }: ColorToolProps) {
   // Which of Hex / RGB the picker's config row is showing — display state the
   // panel doesn't keep for itself.
   const [configMode, setConfigMode] = useState<ConfigMode>('Hex');
@@ -75,6 +79,11 @@ export function ColorTool({ label, icon, value, fallback, emptyBar, onChange }: 
     <Popover
       id={panelId}
       placement="Bottom Start"
+      // Closing ends the gesture. This is the flush the host's save path relies
+      // on: the picker is portaled outside the widget, so the host's
+      // blur-before-save never reaches it, but any click outside it closes it —
+      // including the one on the host's own save menu.
+      onOpenChange={(open: boolean) => { if (!open) onCommit?.(); }}
       trigger={
         <Tooltip bodyText={label} placement="Bottom">
           <div
@@ -105,8 +114,16 @@ export function ColorTool({ label, icon, value, fallback, emptyBar, onChange }: 
     >
       <PopoverBody>
         {/* The picker paints its own surface; stop clicks inside it from
-            reaching the grid's clear-selection handler. */}
-        <div className="vg-color-panel" onClick={(e) => e.stopPropagation()}>
+            reaching the grid's clear-selection handler. Each drag area
+            captures its pointer, so a release anywhere — even outside the
+            panel — still lands here as the end of the drag. */}
+        <div
+          className="vg-color-panel"
+          onClick={(e) => e.stopPropagation()}
+          onPointerUp={onCommit}
+          onPointerCancel={onCommit}
+          onBlur={onCommit}
+        >
           <ColorPicker
             hue={hue}
             saturation={saturation}
@@ -127,7 +144,7 @@ export function ColorTool({ label, icon, value, fallback, emptyBar, onChange }: 
               const rgb = hexToRgb(hex);
               if (rgb) emitRgb(rgb[0], rgb[1], rgb[2]);
             }}
-            onColorSelect={(hex: string) => onChange(hex.toUpperCase())}
+            onColorSelect={(hex: string) => { onChange(hex.toUpperCase()); onCommit?.(); }}
           />
         </div>
       </PopoverBody>

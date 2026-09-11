@@ -40,6 +40,11 @@ interface VirtualGridProps {
   store: CellDataStore;
   conditionalRules: ConditionalRule[];
   locked?: boolean;
+  /** View mode: nothing may change the grid (typing, Delete, paste, in-cell
+   *  edit, row/column/cell menus, resizing, the format toolbar), but selection
+   *  and copy still work. Unlike `locked`, which also blocks those and hides the
+   *  headers — so the two are separate on purpose. */
+  readOnly?: boolean;
   /** Lock-mode only. false = columns are scaled to fit the widget width so all
    *  of them stay visible; true = columns keep their configured widths and the
    *  table scrolls sideways. Rows always keep their heights and scroll. */
@@ -287,7 +292,7 @@ function attachWheelStep(input: HTMLInputElement | null): void {
   }, { passive: false });
 }
 
-export function VirtualGrid({ rows, columns, freezeRows, freezeColumns, configColWidths, configRowHeights, store, conditionalRules, locked = false, horizontalScroll = false, tableBorderStyle = 'all', boundCells, previewCells, dataFormatFor, isDataCell, searchMatches, activeMatch, onCellConfigure, hiddenRows, rowColors, onUserChange }: VirtualGridProps) {
+export function VirtualGrid({ rows, columns, freezeRows, freezeColumns, configColWidths, configRowHeights, store, conditionalRules, locked = false, readOnly = false, horizontalScroll = false, tableBorderStyle = 'all', boundCells, previewCells, dataFormatFor, isDataCell, searchMatches, activeMatch, onCellConfigure, hiddenRows, rowColors, onUserChange }: VirtualGridProps) {
   // Bound cells are service-populated — never manually editable.
   const isBound = (cellId: CellId) => boundCells?.has(cellId) ?? false;
   // Effective precision for one cell: the binding's precision applies only to
@@ -311,6 +316,8 @@ export function VirtualGrid({ rows, columns, freezeRows, freezeColumns, configCo
   boundCellsRef.current = boundCells;
   const lockedRef = useRef(locked);
   lockedRef.current = locked;
+  const readOnlyRef = useRef(readOnly);
+  readOnlyRef.current = readOnly;
   // ── Selection ──────────────────────────────────────────────────────────────
   const [selectedCells, setSelectedCells] = useState<Set<CellId>>(new Set());
   const [tick, setTick] = useState(0);
@@ -350,7 +357,25 @@ export function VirtualGrid({ rows, columns, freezeRows, freezeColumns, configCo
   const localFCRef = useRef(localFC);       localFCRef.current = localFC;
   const onUserChangeRef = useRef(onUserChange); onUserChangeRef.current = onUserChange;
 
+  // ── Deferred emit for continuous gestures ─────────────────────────────────
+  // Everything is emitted immediately except the three inputs that fire on
+  // every tick of one gesture: the font-size and decimals fields (per keystroke
+  // and per wheel step) and the colour picker (per pointer move while dragging).
+  // For those, the store is still written at once — the cells repaint live, and
+  // the picker, which is fully controlled, needs its value to move its thumb —
+  // and only the emit waits. It goes out when the gesture ends (see flushEmit's
+  // callers) or after a pause, so one gesture is one emit and nothing is left
+  // on a timer by the time the host saves.
+  const DEFERRED_EMIT_MS = 300;
+  const deferredEmitRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+
   function emitUserChange(overrides?: Partial<GridGeometry>, mutation?: GridMutation) {
+    // An immediate emit carries the whole current state, so it covers any
+    // deferred one still waiting — sending that too would only duplicate it.
+    if (deferredEmitRef.current) {
+      clearTimeout(deferredEmitRef.current);
+      deferredEmitRef.current = null;
+    }
     onUserChangeRef.current?.({
       rows: localRowsRef.current,
       columns: localColsRef.current,
@@ -361,6 +386,30 @@ export function VirtualGrid({ rows, columns, freezeRows, freezeColumns, configCo
       ...overrides,
     }, mutation);
   }
+
+  // Safe to call from a timer or a stale closure: emitUserChange reads every
+  // value through refs, so a late emit still sends the current state.
+  function scheduleEmit() {
+    if (deferredEmitRef.current) clearTimeout(deferredEmitRef.current);
+    deferredEmitRef.current = setTimeout(() => {
+      deferredEmitRef.current = null;
+      emitUserChange();
+    }, DEFERRED_EMIT_MS);
+  }
+
+  /** End of a continuous gesture: send what is waiting, now. No-op otherwise. */
+  function flushEmit() {
+    if (deferredEmitRef.current) emitUserChange();
+  }
+
+  const flushOnWheelEnd = (e: React.PointerEvent<HTMLInputElement>) => {
+    if (document.activeElement !== e.currentTarget) flushEmit();
+  };
+
+  const flushEmitRef = useRef(flushEmit);
+  flushEmitRef.current = flushEmit;
+  // The widget going away mid-gesture must not take the last value with it.
+  useEffect(() => () => flushEmitRef.current(), []);
 
   // ── Border panel ──────────────────────────────────────────────────────────
   const [borderConfig, setBorderConfig] = useState<{
@@ -634,7 +683,7 @@ export function VirtualGrid({ rows, columns, freezeRows, freezeColumns, configCo
     }
 
     function onPaste(e: ClipboardEvent) {
-      if (lockedRef.current) return;
+      if (lockedRef.current || readOnlyRef.current) return;
       if (!focusInsideGrid()) return;
       if ((document.activeElement as HTMLElement | null)?.classList?.contains('vg-data-cell')) return;
       const sel = selectedCellsRef.current;
@@ -882,7 +931,7 @@ export function VirtualGrid({ rows, columns, freezeRows, freezeColumns, configCo
   function handleColContextMenu(e: React.MouseEvent, col: number) {
     e.preventDefault();
     e.stopPropagation();
-    if (locked) return;
+    if (locked || readOnly) return;
     const x = Math.min(e.clientX, window.innerWidth - 200);
     const y = Math.min(e.clientY, window.innerHeight - 180);
     setContextMenu({ type: 'col', index: col, x: Math.max(0, x), y: Math.max(0, y) });
@@ -891,7 +940,7 @@ export function VirtualGrid({ rows, columns, freezeRows, freezeColumns, configCo
   function handleRowContextMenu(e: React.MouseEvent, row: number) {
     e.preventDefault();
     e.stopPropagation();
-    if (locked) return;
+    if (locked || readOnly) return;
     const x = Math.min(e.clientX, window.innerWidth - 200);
     const y = Math.min(e.clientY, window.innerHeight - 210);
     setContextMenu({ type: 'row', index: row, x: Math.max(0, x), y: Math.max(0, y) });
@@ -1021,9 +1070,10 @@ export function VirtualGrid({ rows, columns, freezeRows, freezeColumns, configCo
   const isSideActive = (side: keyof CellBorders) =>
     hasSelection && selectedArr.every((id) => store.getFormat(id).borders[side].enabled);
 
-  function applyFmt(patch: Partial<CellFormat>) {
+  function applyFmt(patch: Partial<CellFormat>, { defer = false }: { defer?: boolean } = {}) {
     selectedArr.forEach((id) => store.setFormat(id, { ...store.getFormat(id), ...patch }));
-    if (selectedArr.length > 0) emitUserChange();
+    if (selectedArr.length === 0) return;
+    if (defer) scheduleEmit(); else emitUserChange();
   }
 
   function toggleSide(side: keyof CellBorders) {
@@ -1116,7 +1166,7 @@ export function VirtualGrid({ rows, columns, freezeRows, freezeColumns, configCo
           <div
             className="vg-resize-handle vg-resize-handle--col"
             onMouseDown={(e) => {
-              if (locked) return;
+              if (locked || readOnly) return;
               e.preventDefault();
               e.stopPropagation();
               document.body.style.cursor = 'col-resize';
@@ -1158,7 +1208,7 @@ export function VirtualGrid({ rows, columns, freezeRows, freezeColumns, configCo
           <div
             className="vg-resize-handle vg-resize-handle--row"
             onMouseDown={(e) => {
-              if (locked) return;
+              if (locked || readOnly) return;
               e.preventDefault();
               e.stopPropagation();
               document.body.style.cursor = 'row-resize';
@@ -1241,7 +1291,7 @@ export function VirtualGrid({ rows, columns, freezeRows, freezeColumns, configCo
           className={classNames}
           style={cellInlineStyle}
           title={bound ? bound.topic : (fmt.link || undefined)}
-          contentEditable={!locked && !bound}
+          contentEditable={!locked && !readOnly && !bound}
           suppressContentEditableWarning
           onMouseEnter={(e) => {
             // A cell narrower than its text shows the whole value on hover,
@@ -1276,9 +1326,9 @@ export function VirtualGrid({ rows, columns, freezeRows, freezeColumns, configCo
             }
           }}
           onMouseDown={(e) => {
-            // Locked or bound: never take browser focus — click still selects,
-            // double-click still opens the config popover.
-            if (locked || bound) { e.preventDefault(); return; }
+            // Locked, read-only or bound: never take browser focus — click still
+            // selects (so copy works), double-click still opens the config popover.
+            if (locked || readOnly || bound) { e.preventDefault(); return; }
             // Formula pick mode: keep focus on the formula cell
             if (formulaEditingCell && formulaEditingCell !== cellId) {
               e.preventDefault();
@@ -1308,10 +1358,11 @@ export function VirtualGrid({ rows, columns, freezeRows, freezeColumns, configCo
             handleCellClick(e, cellId);
           }}
           onDoubleClick={(e) => {
-            // A locked table has nothing to edit in-cell, so the gesture is left
-            // to bubble: the widget turns it into "open my config panel". Only
-            // stop propagation when this cell is actually going to act on it.
-            if (locked) return;
+            // A locked or read-only table has nothing to edit in-cell, so the
+            // gesture is left to bubble: the widget turns it into "open my config
+            // panel" (in view mode, that is how the user asks to start editing).
+            // Only stop propagation when this cell is actually going to act on it.
+            if (locked || readOnly) return;
             e.stopPropagation();
             // Standard spreadsheet convention: double-click edits the cell's
             // text. Bound cells aren't manually editable, so there double-click
@@ -1323,7 +1374,7 @@ export function VirtualGrid({ rows, columns, freezeRows, freezeColumns, configCo
               enterEditMode(cellId);
             }
           }}
-          onContextMenu={!locked ? (e) => {
+          onContextMenu={!locked && !readOnly ? (e) => {
             // Right-click opens the cell menu (clear, format, bind, row/column
             // ops). Left-click selection is preserved when the cell is already
             // part of the selection so a menu action can act on the whole block.
@@ -1427,11 +1478,11 @@ export function VirtualGrid({ rows, columns, freezeRows, freezeColumns, configCo
   // ── Render ─────────────────────────────────────────────────────────────────
   return (
     <div
-      className="vg-root"
+      className={`vg-root${readOnly ? ' vg-root--read-only' : ''}`}
       onClick={() => { setSelectedCells(new Set()); setContextMenu(null); }}
     >
-      {/* ── Formatting toolbar — not rendered at all when locked ── */}
-      {!locked && <div
+      {/* ── Formatting toolbar — not rendered at all when locked or read-only ── */}
+      {!locked && !readOnly && <div
         className={`vg-toolbar${hasSelection ? '' : ' vg-toolbar--hidden'}`}
         onClick={(e) => e.stopPropagation()}
       >
@@ -1459,10 +1510,11 @@ export function VirtualGrid({ rows, columns, freezeRows, freezeColumns, configCo
               setFontSizeDraft(raw);
               const size = Math.abs(parseInt(raw, 10));
               if (!isNaN(size) && size >= MIN_FONT_SIZE && size <= MAX_FONT_SIZE) {
-                applyFmt({ fontSize: size });
+                applyFmt({ fontSize: size }, { defer: true });
                 setFontSizeDraft(null);   // back in range — follow the selection again
               }
             }}
+            onPointerLeave={flushOnWheelEnd}
             onBlur={() => {
               // Empty or out of range on the way out: clamp what was typed, or
               // fall back to the size the selection already has.
@@ -1471,6 +1523,9 @@ export function VirtualGrid({ rows, columns, freezeRows, freezeColumns, configCo
                 applyFmt({ fontSize: Math.min(MAX_FONT_SIZE, Math.max(MIN_FONT_SIZE, typed)) });
               }
               setFontSizeDraft(null);
+              // Gesture over. A clamp above already emitted (and cancelled the
+              // wait); otherwise send the last in-range value now.
+              flushEmit();
             }}
           />
         </Tooltip>
@@ -1512,13 +1567,16 @@ export function VirtualGrid({ rows, columns, freezeRows, freezeColumns, configCo
               value={currentDecimals === null ? '' : currentDecimals}
               onKeyDown={(e: React.KeyboardEvent<HTMLInputElement>) => {
                 if (e.key === '-') e.preventDefault();
+                if (e.key === 'Enter') flushEmit();
               }}
               onChange={(e: React.ChangeEvent<HTMLInputElement>) => {
                 const raw = e.target.value;
-                if (raw === '') { applyFmt({ decimals: null }); return; }
+                if (raw === '') { applyFmt({ decimals: null }, { defer: true }); return; }
                 const d = Math.abs(parseInt(raw, 10));
-                if (!isNaN(d) && d <= 10) applyFmt({ decimals: d });
+                if (!isNaN(d) && d <= 10) applyFmt({ decimals: d }, { defer: true });
               }}
+              onBlur={flushEmit}
+              onPointerLeave={flushOnWheelEnd}
             />
           </span>
         </Tooltip>
@@ -1539,7 +1597,10 @@ export function VirtualGrid({ rows, columns, freezeRows, freezeColumns, configCo
           icon={<Type size={13} />}
           value={currentTextColor}
           fallback="#1A1A1A"
-          onChange={(color) => applyFmt({ textColor: color })}
+          // Dragging emits on every pointer move: write the store at once so
+          // the cells and the picker's thumb follow, send once the drag ends.
+          onChange={(color) => applyFmt({ textColor: color }, { defer: true })}
+          onCommit={flushEmit}
         />
 
         <ColorTool
@@ -1548,7 +1609,8 @@ export function VirtualGrid({ rows, columns, freezeRows, freezeColumns, configCo
           value={currentCellColor}
           fallback="#FFFFFF"
           emptyBar
-          onChange={(color) => applyFmt({ cellColor: color })}
+          onChange={(color) => applyFmt({ cellColor: color }, { defer: true })}
+          onCommit={flushEmit}
         />
 
         <span className="vg-divider" />
@@ -1737,13 +1799,13 @@ export function VirtualGrid({ rows, columns, freezeRows, freezeColumns, configCo
             setSelectedCells(new Set([nextId]));
             rowVirt.scrollToIndex(r, { align: 'auto' });
             colVirt.scrollToIndex(c, { align: 'auto' });
-          } else if (!locked && (e.key === 'Enter' || e.key === 'F2')) {
+          } else if (!locked && !readOnly && (e.key === 'Enter' || e.key === 'F2')) {
             e.preventDefault();
             if (id) enterEditMode(id);
-          } else if (!locked && (e.key === 'Backspace' || e.key === 'Delete')) {
+          } else if (!locked && !readOnly && (e.key === 'Backspace' || e.key === 'Delete')) {
             e.preventDefault();
             clearContents([...selectedCells]);
-          } else if (!locked && !e.ctrlKey && !e.metaKey && !e.altKey && e.key.length === 1) {
+          } else if (!locked && !readOnly && !e.ctrlKey && !e.metaKey && !e.altKey && e.key.length === 1) {
             // Printable char: enter edit mode with that character (overwrites)
             if (id && !isBound(id)) {
               e.preventDefault();

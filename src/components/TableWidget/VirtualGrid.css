@@ -444,6 +444,12 @@
   height: 2px;
   width: 70%;
 }
+/* View mode: resizing is blocked, so the handle must not advertise it. With
+   pointer-events off, a press on the header edge falls through to the header
+   itself and selects the column/row, which view mode still allows. */
+.vg-root--read-only .vg-resize-handle {
+  pointer-events: none;
+}
 /* ── Number format select in toolbar ── */
 .vg-numfmt-select {
   height: 28px;
